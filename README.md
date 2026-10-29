@@ -1,3 +1,5 @@
+[简体中文说明](README.zh-CN.md) · This fork provides a Simplified Chinese interface.
+
 # AirPods Volume Memory
 
 A small, native macOS menu-bar utility that remembers the output volume for each pair of AirPods and restores it when they reconnect. It is intended to work around the macOS/Bluetooth behavior where AirPods occasionally return at an unexpected volume.

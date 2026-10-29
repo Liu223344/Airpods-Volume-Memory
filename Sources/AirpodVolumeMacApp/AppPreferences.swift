@@ -12,10 +12,10 @@ enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .iconOnly: return "Icon only"
-        case .iconAndPercentage: return "Icon and percentage"
-        case .compactText: return "AirPods and percentage"
-        case .deviceName: return "Device name and percentage"
+        case .iconOnly: return "仅图标"
+        case .iconAndPercentage: return "图标和百分比"
+        case .compactText: return "AirPods 和百分比"
+        case .deviceName: return "设备名称和百分比"
         }
     }
 }
@@ -29,9 +29,9 @@ enum RestoreNotificationMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .off: return "Off"
-        case .failuresOnly: return "Failures only"
-        case .allResults: return "All restore results"
+        case .off: return "关闭"
+        case .failuresOnly: return "仅失败时通知"
+        case .allResults: return "所有恢复结果"
         }
     }
 }
@@ -51,6 +51,21 @@ final class AppPreferences: ObservableObject {
         }
     }
 
+    @Published var highVolumeWarningEnabled: Bool {
+        didSet {
+            defaults.set(highVolumeWarningEnabled, forKey: "highVolumeWarningEnabled")
+            onHighVolumeWarningChanged?()
+        }
+    }
+
+    @Published var highVolumeThreshold: Double {
+        didSet {
+            defaults.set(highVolumeThreshold, forKey: "highVolumeThreshold")
+            onHighVolumeWarningChanged?()
+        }
+    }
+
+    var onHighVolumeWarningChanged: (() -> Void)?
     var onMenuBarDisplayModeChanged: (() -> Void)?
     var onRestoreNotificationModeChanged: ((RestoreNotificationMode) -> Void)?
 
@@ -60,6 +75,11 @@ final class AppPreferences: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        highVolumeWarningEnabled = defaults.object(forKey: "highVolumeWarningEnabled") == nil
+            ? true : defaults.bool(forKey: "highVolumeWarningEnabled")
+        let threshold = defaults.object(forKey: "highVolumeThreshold") == nil
+            ? 60 : defaults.double(forKey: "highVolumeThreshold")
+        highVolumeThreshold = threshold.isFinite ? min(max(threshold, 1), 100) : 60
         menuBarDisplayMode = MenuBarDisplayMode(
             rawValue: defaults.string(forKey: menuBarDisplayModeKey) ?? ""
         ) ?? .compactText
@@ -75,6 +95,20 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         UNUserNotificationCenter.current().delegate = self
     }
 
+    func requestWarningAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+    }
+
+    func deliverHighVolumeWarning(deviceName: String, percent: Int, threshold: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "AirPods 高音量提醒"
+        content.body = "\(deviceName) 当前音量为 \(percent)%，已超过设定的 \(threshold)%。可适当降低音量。"
+        // Silent banner: the warning itself should not add a loud sound.
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "airpods-high-volume-warning", content: content, trigger: nil
+        ))
+    }
+
     func modeChanged(_ mode: RestoreNotificationMode) {
         guard mode != .off else {
             return
@@ -88,14 +122,14 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         }
 
         let content = UNMutableNotificationContent()
-        content.title = event.succeeded ? "AirPods Volume Restored" : "AirPods Restore Failed"
+        content.title = event.succeeded ? "AirPods 音量已恢复" : "AirPods 音量恢复失败"
         if let volume = event.volume {
             let percent = Int((min(max(volume, 0), 1) * 100).rounded())
             content.body = event.succeeded
-                ? "\(event.deviceName) was restored to \(percent)%."
-                : "\(event.deviceName) remained at \(percent)%. Open AirPods Volume to retry."
+                ? "\(event.deviceName) 已恢复至 \(percent)%."
+                : "\(event.deviceName) 仍为 \(percent)%。请打开 AirPods 音量重试。"
         } else {
-            content.body = "Could not verify the volume for \(event.deviceName). Open AirPods Volume to retry."
+            content.body = "无法验证音量：\(event.deviceName). 请打开 AirPods 音量重试。"
         }
         content.sound = event.succeeded ? nil : .default
 
@@ -113,5 +147,24 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+}
+
+/// Tracks threshold crossings independently of UI rendering frequency.
+struct HighVolumeWarningGate {
+    private var warnedDevice: String?
+
+    mutating func shouldWarn(deviceUID: String?, volume: Float?, enabled: Bool, threshold: Double) -> Bool {
+        guard enabled, let uid = deviceUID, let volume, volume.isFinite else {
+            warnedDevice = nil
+            return false
+        }
+        guard Double(volume) * 100 > threshold + 0.0001 else {
+            warnedDevice = nil
+            return false
+        }
+        guard warnedDevice != uid else { return false }
+        warnedDevice = uid
+        return true
     }
 }
