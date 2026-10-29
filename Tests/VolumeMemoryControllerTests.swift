@@ -17,7 +17,11 @@ enum VolumeMemoryControllerTestRunner {
             ("multiple devices are managed independently", testMultipleDevicesAreManagedIndependently),
             ("history records and deduplicates restore results", testHistoryRecordsAndDeduplicatesRestoreResults),
             ("appearance and notification preferences persist", testPreferencesPersist),
-            ("renamed Apple Bluetooth device detection", testRenamedAppleBluetoothDeviceIsRecognized)
+            ("renamed Apple Bluetooth device detection", testRenamedAppleBluetoothDeviceIsRecognized),
+            ("interrupted restores leave no pending history", testInterruptedRestoresLeaveNoPendingHistory),
+            ("manual restore keeps the connection outcome", testManualRestoreKeepsConnectionOutcome),
+            ("status reports settling until the volume is final", testStatusReportsSettling),
+            ("one connection notification per connection", testConnectionNotification)
         ]
 
         for (name, test) in tests {
@@ -343,6 +347,140 @@ enum VolumeMemoryControllerTestRunner {
 
         try expect(renamedAirPods.isAirPods, "renamed Apple Bluetooth audio should be recognized")
         try expect(!unrelatedBluetoothDevice.isAirPods, "unrelated Bluetooth hardware should be ignored")
+    }
+
+    private static func testInterruptedRestoresLeaveNoPendingHistory() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            controller.start()
+
+            hardware.device = nil
+            hardware.notifyDefaultOutputChanged()
+            try expect(
+                controller.dataSnapshot().history.first?.outcome == .interrupted,
+                "a disconnect during restore left the entry pending"
+            )
+
+            hardware.device = device
+            hardware.notifyDefaultOutputChanged()
+            controller.setCurrentAirPodsVolume(0.6)
+            try expect(
+                controller.dataSnapshot().history.first?.outcome == .interrupted,
+                "a slider change during restore left the entry pending"
+            )
+            controller.stop()
+
+            let stale = AirPodsConnectionHistoryEntry(
+                id: UUID(), deviceUID: device.uid, deviceName: device.name,
+                connectedAt: Date(), connectedVolume: 0.5, restoredVolume: nil, outcome: .pending
+            )
+            defaults.set(try JSONEncoder().encode([stale]), forKey: "airPodsConnectionHistory.v1")
+            let relaunched = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            try expect(
+                relaunched.dataSnapshot().history.first?.outcome == .interrupted,
+                "a restore pending from the previous launch was not cleaned up"
+            )
+        }
+    }
+
+    private static func testManualRestoreKeepsConnectionOutcome() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            controller.pauseRestores(for: nil)
+            controller.start()
+            scheduler.advance(to: 5)
+
+            controller.restoreRememberedVolumeNow()
+            try expect(controller.dataSnapshot().history.first?.outcome == .paused, "manual restore marked the connection pending")
+            scheduler.advance(to: 10)
+            try expect(hardware.volume == 0.25, "manual restore did not apply")
+            try expect(controller.dataSnapshot().history.first?.outcome == .paused, "manual restore rewrote the connection outcome")
+        }
+    }
+
+    private static func testStatusReportsSettling() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.9)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            var statuses: [VolumeMemoryStatus] = []
+            controller.onStatusChanged = { statuses.append($0) }
+            controller.start()
+
+            try expect(
+                statuses.filter({ ($0.currentVolume ?? 0) > 0.8 }).allSatisfy(\.isSettling),
+                "the temporary reconnect volume was reported as settled"
+            )
+            scheduler.advance(to: 10)
+            try expect(statuses.last?.isSettling == false, "the final restored status is still settling")
+            try expect(statuses.last?.currentVolume == 0.25, "the final status has the wrong volume")
+
+            // Without a restore, the end of settling must still publish a settled status.
+            controller.pauseRestores(for: nil)
+            hardware.volume = 0.9
+            hardware.notifyDefaultOutputChanged()
+            try expect(statuses.last?.isSettling == true, "a paused reconnect is not settling")
+            scheduler.advance(to: 20)
+            try expect(statuses.last?.isSettling == false, "no settled status after a paused reconnect")
+            try expect(statuses.last?.currentVolume == 0.9, "the settled status has the wrong volume")
+        }
+    }
+
+    private static func testConnectionNotification() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            var connections: [ConnectionNotificationEvent] = []
+            var restores: [RestoreNotificationEvent] = []
+            controller.onConnectionNotification = { connections.append($0) }
+            controller.onRestoreNotification = { restores.append($0) }
+
+            controller.start()
+            try expect(connections.isEmpty, "notified before the volume settled")
+            hardware.notifyDefaultOutputChanged() // Duplicate CoreAudio notification.
+            controller.refresh()
+            scheduler.advance(to: 10)
+            try expect(connections.count == 1, "expected exactly one notification, got \(connections.count)")
+            try expect(connections[0].outcome == .restored, "connection notification lacks the restore result")
+            try expect(connections[0].volume == 0.25, "connection notification has the wrong volume")
+            try expect(restores.count == 1 && restores[0].isConnectionRestore, "restore was not flagged as the connection restore")
+
+            controller.restoreRememberedVolumeNow()
+            scheduler.advance(to: 20)
+            try expect(connections.count == 1, "a manual restore sent another connection notification")
+            try expect(restores.count == 2 && !restores[1].isConnectionRestore, "manual restore was flagged as a connection restore")
+
+            hardware.device = nil
+            hardware.notifyDefaultOutputChanged()
+            let second = AudioDevice(
+                id: 43, uid: "new-airpods", name: "New AirPods", manufacturer: "Apple Inc.",
+                modelUID: "NewAirPods", transportType: kAudioDeviceTransportTypeBluetooth
+            )
+            hardware.device = second
+            hardware.volume = 0.4
+            hardware.notifyDefaultOutputChanged()
+            scheduler.advance(to: 30)
+            try expect(connections.count == 2, "a new connection was not notified")
+            try expect(connections[1].outcome == .noRememberedVolume && connections[1].volume == 0.4, "new device notification is wrong")
+
+            let preferences = AppPreferences(defaults: defaults)
+            try expect(preferences.connectionNotificationEnabled, "connection notifications should default to on")
+            preferences.connectionNotificationEnabled = false
+            try expect(!AppPreferences(defaults: defaults).connectionNotificationEnabled, "connection notification preference was not persisted")
+        }
     }
 
     private static func makeController(

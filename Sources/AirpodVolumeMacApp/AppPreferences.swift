@@ -65,13 +65,22 @@ final class AppPreferences: ObservableObject {
         }
     }
 
+    @Published var connectionNotificationEnabled: Bool {
+        didSet {
+            defaults.set(connectionNotificationEnabled, forKey: connectionNotificationEnabledKey)
+            onConnectionNotificationChanged?()
+        }
+    }
+
     var onHighVolumeWarningChanged: (() -> Void)?
+    var onConnectionNotificationChanged: (() -> Void)?
     var onMenuBarDisplayModeChanged: (() -> Void)?
     var onRestoreNotificationModeChanged: ((RestoreNotificationMode) -> Void)?
 
     private let defaults: UserDefaults
     private let menuBarDisplayModeKey = "menuBarDisplayMode"
     private let restoreNotificationModeKey = "restoreNotificationMode"
+    private let connectionNotificationEnabledKey = "connectionNotificationEnabled"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -86,6 +95,12 @@ final class AppPreferences: ObservableObject {
         restoreNotificationMode = RestoreNotificationMode(
             rawValue: defaults.string(forKey: restoreNotificationModeKey) ?? ""
         ) ?? .off
+        connectionNotificationEnabled = defaults.object(forKey: connectionNotificationEnabledKey) == nil
+            ? true : defaults.bool(forKey: connectionNotificationEnabledKey)
+    }
+
+    var anyNotificationEnabled: Bool {
+        highVolumeWarningEnabled || connectionNotificationEnabled || restoreNotificationMode != .off
     }
 }
 
@@ -95,8 +110,45 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         UNUserNotificationCenter.current().delegate = self
     }
 
-    func requestWarningAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+    /// Always ask for every option at once: macOS shows the prompt only the first
+    /// time, so options requested later are never granted.
+    func requestAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func deliverConnection(_ event: ConnectionNotificationEvent, muted: Bool) {
+        let content = UNMutableNotificationContent()
+        content.title = "已连接 \(event.deviceName)"
+        let volumeText: String
+        if let volume = event.volume {
+            volumeText = muted ? "当前已静音（音量 \(percent(volume))）" : "当前音量 \(percent(volume))"
+        } else {
+            volumeText = "无法读取当前音量"
+        }
+        switch event.outcome {
+        case .restored:
+            content.body = "\(volumeText)，已恢复为记忆音量。"
+        case .failed:
+            let remembered = event.rememberedVolume.map { "记忆音量 \(percent($0)) " } ?? "记忆音量"
+            content.body = "\(volumeText)，\(remembered)未能保持。可在菜单中选择“恢复记忆音量”重试。"
+            content.sound = .default
+        case .paused:
+            content.body = "\(volumeText)。自动恢复已暂停。"
+        case .automaticRestoreOff:
+            content.body = "\(volumeText)。未自动恢复音量。"
+        case .noRememberedVolume:
+            content.body = "\(volumeText)，已记为此设备的初始音量。"
+        case .pending, .interrupted:
+            content.body = "\(volumeText)。"
+        }
+        // One banner per device: a quick reconnect replaces the previous one.
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "airpods-connected-\(event.deviceUID)", content: content, trigger: nil
+        ))
+    }
+
+    private func percent(_ volume: Float) -> String {
+        "\(Int((min(max(volume, 0), 1) * 100).rounded()))%"
     }
 
     func deliverHighVolumeWarning(deviceName: String, percent: Int, threshold: Int) {
@@ -113,7 +165,7 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         guard mode != .off else {
             return
         }
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        requestAuthorization()
     }
 
     func deliver(_ event: RestoreNotificationEvent, mode: RestoreNotificationMode) {
