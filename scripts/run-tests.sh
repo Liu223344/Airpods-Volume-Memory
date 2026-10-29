@@ -17,6 +17,7 @@ swiftc \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/VolumeMemoryController.swift" \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/AppPreferences.swift" \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/VolumeGauge.swift" \
+  "$ROOT_DIR/Sources/AirpodVolumeMacApp/MenuStatusText.swift" \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/PlaybackStallDetector.swift" \
   "$ROOT_DIR/Tests/VolumeMemoryControllerTests.swift"
 

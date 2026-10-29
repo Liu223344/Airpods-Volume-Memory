@@ -23,7 +23,8 @@ enum VolumeMemoryControllerTestRunner {
             ("status reports settling until the volume is final", testStatusReportsSettling),
             ("one connection notification per connection", testConnectionNotification),
             ("notification text leads with the volume", testNotificationText),
-            ("takeover blip nudges the player once", testPlaybackStallDetector)
+            ("takeover blip nudges the player once", testPlaybackStallDetector),
+            ("menu status is plain language", testMenuStatusText)
         ]
 
         for (name, test) in tests {
@@ -544,6 +545,35 @@ enum VolumeMemoryControllerTestRunner {
         // A missed start delivered as an immediate start/stop pair.
         at(80, true); at(80, false)
         try expect(nudges.count == 3, "a takeover too short to observe was missed")
+    }
+
+    private static func testMenuStatusText() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.22, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.22)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            var status: VolumeMemoryStatus?
+            controller.onStatusChanged = { status = $0 }
+            controller.start()
+            scheduler.advance(to: 10)
+
+            guard let settled = status else { throw TestFailure("no status") }
+            var lines = MenuStatusText.lines(for: settled, muted: false)
+            try expect(lines.title == "Test AirPods Pro", "title should be the device name, got \(lines.title)")
+            try expect(lines.detail == "下次连接时恢复到 22%", "detail: \(lines.detail)")
+            try expect(MenuStatusText.lines(for: settled, muted: true).detail == "已静音", "muted detail")
+
+            controller.pauseRestores(for: nil)
+            lines = MenuStatusText.lines(for: status!, muted: false)
+            try expect(lines.detail == "自动恢复已暂停，直到手动恢复", "paused detail: \(lines.detail)")
+
+            hardware.device = nil
+            hardware.notifyDefaultOutputChanged()
+            lines = MenuStatusText.lines(for: status!, muted: false)
+            try expect(lines.title == "当前没有可用的输出设备", "no-device title: \(lines.title)")
+        }
     }
 
     private static func makeController(

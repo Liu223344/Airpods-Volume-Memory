@@ -68,6 +68,10 @@ struct VolumeMemoryStatus {
     let pauseDescription: String?
     /// Reconnect or restore is still in progress, so the volume may be temporary.
     let isSettling: Bool
+    let rememberedVolume: Float?
+    let deviceAutomaticRestoreEnabled: Bool
+    /// Something the user should know about, e.g. a restore that did not hold.
+    let problem: String?
 }
 
 struct VolumeMemoryConfiguration {
@@ -754,7 +758,8 @@ final class VolumeMemoryController {
                     secondary: "请选择“恢复记忆音量”重试。",
                     currentVolume: currentVolume,
                     canAdjustVolume: true,
-                    hasRememberedVolume: true
+                    hasRememberedVolume: true,
+                    problem: "记忆音量没有生效，可拖动滑块重新设置"
                 )
             }
         } catch {
@@ -921,7 +926,8 @@ final class VolumeMemoryController {
             secondary: error.localizedDescription,
             currentVolume: nil,
             canAdjustVolume: canAdjustVolume,
-            hasRememberedVolume: hasRememberedVolume
+            hasRememberedVolume: hasRememberedVolume,
+            problem: primary.trimmingCharacters(in: CharacterSet(charactersIn: "。."))
         )
     }
 
@@ -930,8 +936,10 @@ final class VolumeMemoryController {
         secondary: String,
         currentVolume: Float?,
         canAdjustVolume: Bool,
-        hasRememberedVolume: Bool
+        hasRememberedVolume: Bool,
+        problem: String? = nil
     ) {
+        let airPods = currentDevice?.isAirPods == true ? currentDevice : nil
         let title = currentVolume.map { "AirPods \(percent($0))" } ?? "AirPods Vol"
         onStatusChanged?(
             VolumeMemoryStatus(
@@ -942,10 +950,13 @@ final class VolumeMemoryController {
                 canAdjustVolume: canAdjustVolume,
                 hasRememberedVolume: hasRememberedVolume,
                 automaticRestoreEnabled: automaticRestoreEnabled,
-                currentDeviceName: currentDevice?.isAirPods == true ? currentDevice?.name : nil,
+                currentDeviceName: airPods?.name,
                 restoresPaused: restoresPaused,
                 pauseDescription: pauseDescription,
-                isSettling: isRestoreInProgress || isConnectionSettling
+                isSettling: isRestoreInProgress || isConnectionSettling,
+                rememberedVolume: airPods.flatMap(savedVolume(for:)),
+                deviceAutomaticRestoreEnabled: airPods.map { deviceAutomaticRestoreEnabled($0.uid) } ?? true,
+                problem: problem
             )
         )
     }
