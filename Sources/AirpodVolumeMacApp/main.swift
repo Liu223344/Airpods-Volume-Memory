@@ -36,53 +36,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 final class StatusBarController: NSObject, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
-    private let statusMenuItem = NSMenuItem(title: "正在启动…", action: nil, keyEquivalent: "")
-    private let detailMenuItem = NSMenuItem(title: "正在监听声音设备。", action: nil, keyEquivalent: "")
+    private let titleLabel = NSTextField(labelWithString: "正在启动…")
+    private let detailLabel = NSTextField(labelWithString: "")
     private let volumeSlider = NSSlider(value: 50, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let volumeValueLabel = NSTextField(labelWithString: "--")
-    private lazy var restoreNowItem = makeMenuItem(
-        title: "恢复记忆音量",
-        action: #selector(restoreRememberedVolumeNow),
-        keyEquivalent: "r"
-    )
-    private lazy var saveNowItem = makeMenuItem(
-        title: "保存当前音量",
-        action: #selector(saveCurrentVolumeNow),
-        keyEquivalent: "s"
-    )
-    private lazy var automaticRestoreItem = makeMenuItem(
-        title: "自动恢复音量",
-        action: #selector(toggleAutomaticRestore)
-    )
-    private lazy var launchAtLoginItem = makeMenuItem(
-        title: "登录时启动",
-        action: #selector(toggleLaunchAtLogin)
-    )
     private let loginItems = LoginItemController()
-    private let loginStatusItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
-    private lazy var migrateLoginItem = makeMenuItem(
-        title: "迁移登录启动…", action: #selector(migrateLoginStartup)
-    )
     private let controller = VolumeMemoryController()
     private let preferences = AppPreferences()
     private let notificationManager = RestoreNotificationManager()
+    private let stallMonitor = PlaybackStallMonitor()
     private lazy var deviceManagerViewModel = DeviceManagerViewModel(
         controller: controller,
-        preferences: preferences
+        preferences: preferences,
+        loginItems: loginItems
     )
     private lazy var deviceManagerWindowController = DeviceManagerWindowController(
         viewModel: deviceManagerViewModel
     )
-    private lazy var manageDevicesItem = makeMenuItem(
-        title: "管理 AirPods…",
+    private lazy var settingsItem = makeMenuItem(
+        title: "设置…",
         action: #selector(showDeviceManager),
         keyEquivalent: ","
     )
-    private lazy var resumeRestoresItem = makeMenuItem(
-        title: "恢复自动调节",
-        action: #selector(resumeRestores)
-    )
-    private lazy var pauseRestoresItem = makePauseMenuItem()
     private var isRenderingStatus = false
     private var wakeObserver: NSObjectProtocol?
     private var highVolumeWarningGate = HighVolumeWarningGate()
@@ -93,7 +68,6 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         configureStatusItem()
         configureMenu()
         loginItems.prepareLegacyMigration()
-        renderLaunchAtLoginState()
 
         controller.onStatusChanged = { [weak self] status in
             DispatchQueue.main.async {
@@ -144,6 +118,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if preferences.anyNotificationEnabled {
             notificationManager.requestAuthorization()
         }
+        stallMonitor.isEnabled = { [weak self] in self?.preferences.fixSilentSwitchEnabled ?? false }
+        preferences.onFixSilentSwitchChanged = { [weak self] in
+            guard let self else { return }
+            self.updateStallMonitor()
+            if self.preferences.fixSilentSwitchEnabled && !AccessibilityAccess.isTrusted {
+                AccessibilityAccess.request()
+            }
+            self.deviceManagerViewModel.refreshRuntimeState()
+        }
+        updateStallMonitor()
         controller.start()
     }
 
@@ -154,7 +138,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     func stop() {
+        stallMonitor.stop()
         controller.stop()
+    }
+
+    /// The iPhone-Mac switch fix only listens to the device while it is turned on.
+    private func updateStallMonitor() {
+        if preferences.fixSilentSwitchEnabled {
+            stallMonitor.start()
+        } else {
+            stallMonitor.stop()
+        }
     }
 
     private func configureStatusItem() {
@@ -165,87 +159,60 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func configureMenu() {
         menu.delegate = self
-        statusMenuItem.isEnabled = false
-        detailMenuItem.isEnabled = false
         volumeSlider.target = self
         volumeSlider.action = #selector(volumeSliderChanged)
         volumeSlider.isContinuous = true
-        volumeSlider.numberOfTickMarks = 17
-        volumeSlider.allowsTickMarkValuesOnly = true
 
-        let quitItem = NSMenuItem(
-            title: "退出 AirPods 音量",
-            action: #selector(quit),
-            keyEquivalent: "q"
-        )
+        let quitItem = NSMenuItem(title: "退出", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
 
-        menu.addItem(statusMenuItem)
-        menu.addItem(detailMenuItem)
+        menu.addItem(makeHeaderItem())
         menu.addItem(.separator())
-        menu.addItem(makeVolumeSliderItem())
-        menu.addItem(.separator())
-        menu.addItem(restoreNowItem)
-        menu.addItem(saveNowItem)
-        menu.addItem(.separator())
-        menu.addItem(pauseRestoresItem)
-        menu.addItem(resumeRestoresItem)
-        menu.addItem(automaticRestoreItem)
-        menu.addItem(manageDevicesItem)
-        menu.addItem(.separator())
-        menu.addItem(launchAtLoginItem)
-        loginStatusItem.isEnabled = false
-        menu.addItem(loginStatusItem)
-        menu.addItem(migrateLoginItem)
-        menu.addItem(.separator())
+        menu.addItem(settingsItem)
         menu.addItem(quitItem)
     }
 
     func menuWillOpen(_ menu: NSMenu) {
         controller.refresh()
         deviceManagerViewModel.refreshRuntimeState()
-        // launchctl subprocesses would delay the menu; update it once they return.
-        loginItems.refreshInBackground { [weak self] in self?.renderLaunchAtLoginState() }
     }
 
-    private func makePauseMenuItem() -> NSMenuItem {
-        let item = NSMenuItem(title: "暂停自动调节", action: nil, keyEquivalent: "")
-        let submenu = NSMenu()
-        submenu.addItem(makeMenuItem(title: "暂停 15 分钟", action: #selector(pauseFor15Minutes)))
-        submenu.addItem(makeMenuItem(title: "暂停 1 小时", action: #selector(pauseForOneHour)))
-        submenu.addItem(makeMenuItem(title: "暂停直到手动恢复", action: #selector(pauseUntilResumed)))
-        item.submenu = submenu
-        return item
-    }
+    /// Device name, what happens to its volume, and the volume slider in one block.
+    private func makeHeaderItem() -> NSMenuItem {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 280, height: 74))
+        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        detailLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        detailLabel.textColor = .secondaryLabelColor
+        volumeValueLabel.alignment = .right
+        volumeValueLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .medium)
+        [titleLabel, detailLabel].forEach { $0.lineBreakMode = .byTruncatingTail }
 
-    private func makeVolumeSliderItem() -> NSMenuItem {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 44))
-        let titleLabel = NSTextField(labelWithString: "AirPods 音量")
-        let menuItem = NSMenuItem()
-
-        [titleLabel, volumeSlider, volumeValueLabel].forEach {
+        [titleLabel, detailLabel, volumeSlider, volumeValueLabel].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview($0)
         }
 
-        volumeValueLabel.alignment = .right
-        volumeValueLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-            titleLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 4),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -14),
+            titleLabel.topAnchor.constraint(equalTo: container.topAnchor, constant: 6),
 
-            volumeValueLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
-            volumeValueLabel.centerYAnchor.constraint(equalTo: titleLabel.centerYAnchor),
-            volumeValueLabel.widthAnchor.constraint(equalToConstant: 42),
+            detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -14),
+            detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
 
             volumeSlider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-            volumeSlider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
-            volumeSlider.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2)
+            volumeSlider.trailingAnchor.constraint(equalTo: volumeValueLabel.leadingAnchor, constant: -8),
+            volumeSlider.topAnchor.constraint(equalTo: detailLabel.bottomAnchor, constant: 8),
+
+            volumeValueLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            volumeValueLabel.centerYAnchor.constraint(equalTo: volumeSlider.centerYAnchor),
+            volumeValueLabel.widthAnchor.constraint(equalToConstant: 42)
         ])
 
-        menuItem.view = container
-        return menuItem
+        let item = NSMenuItem()
+        item.view = container
+        return item
     }
 
     private var outputIsMuted: Bool {
@@ -260,27 +227,21 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         checkHighVolume(status)
         renderMenuBar(status)
-        statusMenuItem.title = status.primaryText
-        detailMenuItem.title = outputIsMuted
-            ? "当前已静音；取消静音后使用原来的音量。" : status.secondaryText
+        let muted = outputIsMuted
+        let lines = MenuStatusText.lines(for: status, muted: muted)
+        titleLabel.stringValue = lines.title
+        detailLabel.stringValue = lines.detail
 
         if let currentVolume = status.currentVolume {
             let percent = Int((min(max(currentVolume, 0), 1) * 100).rounded())
             volumeSlider.doubleValue = Double(percent)
-            volumeValueLabel.stringValue = outputIsMuted ? "静音" : "\(percent)%"
+            volumeValueLabel.stringValue = muted ? "静音" : "\(percent)%"
         } else {
             volumeSlider.doubleValue = 0
             volumeValueLabel.stringValue = "--"
         }
 
         volumeSlider.isEnabled = status.canAdjustVolume
-        saveNowItem.isEnabled = status.canAdjustVolume
-        restoreNowItem.isEnabled = status.canAdjustVolume && status.hasRememberedVolume
-        automaticRestoreItem.state = status.automaticRestoreEnabled ? .on : .off
-        pauseRestoresItem.isHidden = status.restoresPaused
-        resumeRestoresItem.isHidden = !status.restoresPaused
-        resumeRestoresItem.title = status.pauseDescription.map { "恢复自动调节（暂停：\($0)）" }
-            ?? "恢复自动调节"
         deviceManagerViewModel.refreshRuntimeState()
     }
 
@@ -297,7 +258,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         ), let volume = status.currentVolume {
             notificationManager.deliverHighVolumeWarning(
                 deviceName: status.currentDeviceName ?? "AirPods",
-                percent: Int((min(max(volume, 0), 1) * 100).rounded()),
+                volume: volume,
                 threshold: Int(preferences.highVolumeThreshold.rounded())
             )
         }
@@ -341,68 +302,8 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         return item
     }
 
-    @objc private func saveCurrentVolumeNow() {
-        controller.saveCurrentVolumeNow()
-    }
-
-    @objc private func restoreRememberedVolumeNow() {
-        controller.restoreRememberedVolumeNow()
-    }
-
-    @objc private func toggleAutomaticRestore() {
-        controller.setAutomaticRestoreEnabled(!controller.automaticRestoreEnabled)
-    }
-
-    @objc private func pauseFor15Minutes() {
-        controller.pauseRestores(for: 15 * 60)
-    }
-
-    @objc private func pauseForOneHour() {
-        controller.pauseRestores(for: 60 * 60)
-    }
-
-    @objc private func pauseUntilResumed() {
-        controller.pauseRestores(for: nil)
-    }
-
-    @objc private func resumeRestores() {
-        controller.resumeRestores()
-    }
-
     @objc func showDeviceManager() {
         deviceManagerWindowController.show()
-    }
-
-    @objc private func toggleLaunchAtLogin() {
-        loginItems.refresh()
-        do { try loginItems.setEnabled(!loginItems.state.isEnabled) }
-        catch { showLaunchAtLoginError(error) }
-        renderLaunchAtLoginState()
-    }
-
-    @objc private func migrateLoginStartup() {
-        loginItems.prepareLegacyMigration()
-        if loginItems.state.requiresApproval { loginItems.openSettings() }
-        renderLaunchAtLoginState()
-    }
-
-    private func renderLaunchAtLoginState() {
-        let state = loginItems.state
-        launchAtLoginItem.state = state.isEnabled ? .on : (state.requiresApproval ? .mixed : .off)
-        loginStatusItem.title = "登录启动：\(state.summary)"
-        launchAtLoginItem.toolTip = loginItems.lastError ?? state.summary
-        migrateLoginItem.isHidden = !state.legacyEnabled && !state.requiresApproval
-        migrateLoginItem.title = state.requiresApproval ? "在系统设置中批准登录启动…" : "迁移登录启动…"
-    }
-
-    private func showLaunchAtLoginError(_ error: Error) {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "无法更改登录启动设置"
-        alert.informativeText = error.localizedDescription
-        alert.addButton(withTitle: "好")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.runModal()
     }
 
     @objc private func volumeSliderChanged() {
@@ -410,7 +311,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             return
         }
 
-        controller.setCurrentAirPodsVolume(Float(volumeSlider.doubleValue / 100))
+        // Whole percents: fine enough to set any level, and what the label shows.
+        let percent = volumeSlider.doubleValue.rounded()
+        volumeSlider.doubleValue = percent
+        volumeValueLabel.stringValue = "\(Int(percent))%"
+        controller.setCurrentAirPodsVolume(Float(percent / 100))
     }
 
     @objc private func quit() {

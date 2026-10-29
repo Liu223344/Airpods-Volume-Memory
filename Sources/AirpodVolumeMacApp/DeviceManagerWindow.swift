@@ -5,14 +5,17 @@ final class DeviceManagerViewModel: ObservableObject {
     @Published private(set) var snapshot: VolumeMemoryDataSnapshot
     @Published private(set) var restoresPaused = false
     @Published private(set) var pauseSummary: String?
+    @Published private(set) var accessibilityTrusted = AccessibilityAccess.isTrusted
     @Published var automaticRestoreEnabled: Bool
 
     let preferences: AppPreferences
+    let loginItems: LoginItemController
     private let controller: VolumeMemoryController
 
-    init(controller: VolumeMemoryController, preferences: AppPreferences) {
+    init(controller: VolumeMemoryController, preferences: AppPreferences, loginItems: LoginItemController) {
         self.controller = controller
         self.preferences = preferences
+        self.loginItems = loginItems
         snapshot = controller.dataSnapshot()
         automaticRestoreEnabled = controller.automaticRestoreEnabled
         refreshRuntimeState()
@@ -27,6 +30,23 @@ final class DeviceManagerViewModel: ObservableObject {
         restoresPaused = controller.restoresPaused
         pauseSummary = controller.pauseDescription
         automaticRestoreEnabled = controller.automaticRestoreEnabled
+        accessibilityTrusted = AccessibilityAccess.isTrusted
+    }
+
+    /// launchctl runs in the background, so this is only done when Settings is shown.
+    func refreshLoginState() {
+        loginItems.refreshInBackground {}
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        loginItems.refresh()
+        // A failure is kept in loginItems.lastError and shown under the switch.
+        try? loginItems.setEnabled(enabled)
+    }
+
+    func finishLoginMigration() {
+        loginItems.prepareLegacyMigration()
+        if loginItems.state.requiresApproval { loginItems.openSettings() }
     }
 
     func setRememberedVolume(_ volume: Double, for deviceUID: String) {
@@ -71,6 +91,7 @@ final class DeviceManagerWindowController: NSObject, NSWindowDelegate {
 
     func show() {
         viewModel.refreshRuntimeState()
+        viewModel.refreshLoginState()
         if window == nil {
             let rootView = DeviceManagerRootView(viewModel: viewModel)
             let hostingController = NSHostingController(rootView: rootView)
@@ -105,7 +126,7 @@ private struct DeviceManagerRootView: View {
                 .tabItem { Label("设备", systemImage: "airpodspro") }
             ConnectionHistoryView(viewModel: viewModel)
                 .tabItem { Label("历史记录", systemImage: "clock.arrow.circlepath") }
-            PreferencesView(viewModel: viewModel, preferences: viewModel.preferences)
+            PreferencesView(viewModel: viewModel, preferences: viewModel.preferences, loginItems: viewModel.loginItems)
                 .tabItem { Label("设置", systemImage: "gearshape") }
         }
         .padding(20)
@@ -326,9 +347,37 @@ private struct ConnectionHistoryView: View {
 private struct PreferencesView: View {
     @ObservedObject var viewModel: DeviceManagerViewModel
     @ObservedObject var preferences: AppPreferences
+    @ObservedObject var loginItems: LoginItemController
 
     var body: some View {
         Form {
+            Section("通用") {
+                Toggle("开机时自动启动", isOn: Binding(
+                    get: { loginItems.state.isEnabled },
+                    set: { viewModel.setLaunchAtLogin($0) }
+                ))
+                if loginItems.state.requiresApproval {
+                    HStack {
+                        Label("需要在系统设置的“登录项”里允许", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("打开系统设置") { loginItems.openSettings() }
+                    }
+                } else if loginItems.state.legacyEnabled {
+                    HStack {
+                        Text("正在使用旧版的启动方式")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("改用系统登录项") { viewModel.finishLoginMigration() }
+                    }
+                }
+                if let error = loginItems.lastError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
             Section("音量恢复") {
                 Toggle(
                     "连接 AirPods 时自动恢复音量",
@@ -352,6 +401,24 @@ private struct PreferencesView: View {
                         }
                     }
                 }
+            }
+
+            Section("耳机切换") {
+                Toggle("iPhone-Mac 切换修复", isOn: $preferences.fixSilentSwitchEnabled)
+                if preferences.fixSilentSwitchEnabled && !viewModel.accessibilityTrusted {
+                    HStack {
+                        Label("需要辅助功能权限", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("打开系统设置") {
+                            AccessibilityAccess.request()
+                            AccessibilityAccess.openSettings()
+                        }
+                    }
+                }
+                Text("默认关闭。耳机连着 iPhone 时在 Mac 上点播放，部分播放器（如“音乐”）可能切过来后没声音。开启后，应用会在耳机切换的瞬间自动按一次暂停再播放，开头会晚约半秒出声。没有遇到这个问题就不需要开启。开启后需要在“系统设置 > 隐私与安全性 > 辅助功能”中允许本应用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("外观") {
@@ -395,6 +462,10 @@ private struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            viewModel.refreshRuntimeState()
+            viewModel.refreshLoginState()
+        }
     }
 }
 

@@ -21,7 +21,10 @@ enum VolumeMemoryControllerTestRunner {
             ("interrupted restores leave no pending history", testInterruptedRestoresLeaveNoPendingHistory),
             ("manual restore keeps the connection outcome", testManualRestoreKeepsConnectionOutcome),
             ("status reports settling until the volume is final", testStatusReportsSettling),
-            ("one connection notification per connection", testConnectionNotification)
+            ("one connection notification per connection", testConnectionNotification),
+            ("notification text leads with the volume", testNotificationText),
+            ("takeover blip nudges the player once", testPlaybackStallDetector),
+            ("menu status is plain language", testMenuStatusText)
         ]
 
         for (name, test) in tests {
@@ -480,6 +483,96 @@ enum VolumeMemoryControllerTestRunner {
             try expect(preferences.connectionNotificationEnabled, "connection notifications should default to on")
             preferences.connectionNotificationEnabled = false
             try expect(!AppPreferences(defaults: defaults).connectionNotificationEnabled, "connection notification preference was not persisted")
+        }
+    }
+
+    private static func testNotificationText() throws {
+        func event(_ volume: Float?, _ outcome: RestoreHistoryOutcome, remembered: Float? = 0.35) -> ConnectionNotificationEvent {
+            ConnectionNotificationEvent(deviceUID: "a", deviceName: "Pods", volume: volume,
+                                        rememberedVolume: remembered, outcome: outcome)
+        }
+        try expect(
+            NotificationText.connection(event(0.4, .restored), muted: false)
+                == NotificationText(title: "AirPods 音量 40%", body: "Pods · 已恢复记忆音量"),
+            "restored connection text"
+        )
+        try expect(
+            NotificationText.connection(event(0.62, .failed), muted: false).body == "Pods · 未能恢复到 35%，可在菜单中重试",
+            "failed connection names the remembered volume"
+        )
+        try expect(
+            NotificationText.connection(event(0.4, .paused), muted: true).title == "AirPods 已静音 · 40%",
+            "muted title keeps the level"
+        )
+        try expect(NotificationText.connection(event(nil, .pending), muted: false).title == "AirPods 已连接", "unknown volume title")
+        try expect(
+            NotificationText.highVolume(deviceName: "Pods", volume: 0.8, threshold: 60).title == "AirPods 音量 80%",
+            "high-volume title"
+        )
+        try expect(VolumeGauge.image(size: 64, style: VolumeGauge.notificationStyle(volume: 1, muted: false)) != nil,
+                   "gauge image renders")
+    }
+
+    private static func testPlaybackStallDetector() throws {
+        var clock: TimeInterval = 0
+        let detector = PlaybackStallDetector(now: { Date(timeIntervalSinceReferenceDate: clock) })
+        var nudges: [TimeInterval] = []
+        detector.onStall = { nudges.append(clock) }
+        func at(_ time: TimeInterval, _ running: Bool, output: Bool? = true) {
+            clock = time
+            detector.deviceRunningChanged(running, outputStillActive: output)
+        }
+
+        // Recorded takeover from iPhone: start, stop 0.22 s later while Music still outputs, restart.
+        at(0, true); at(0.22, false); at(0.65, true)
+        try expect(nudges == [0.22], "takeover was not nudged at the stop, before sound: \(nudges)")
+        // Our own pause/play right after must not trigger again.
+        at(0.7, false, output: false); at(1.0, true); at(1.2, false)
+        try expect(nudges.count == 1, "the nudge retriggered itself")
+
+        // Normal start and pause on AirPods already owned by this Mac.
+        at(10, false, output: false); at(20, true); at(30, false, output: false); at(40, true)
+        try expect(nudges.count == 1, "a normal start or pause triggered a nudge")
+
+        // Quick pause by the user: the player no longer reports output.
+        at(50, false, output: false); at(60, true); at(60.5, false, output: false)
+        try expect(nudges.count == 1, "a quick user pause triggered a nudge")
+
+        // Unknown per-app state (macOS before 14.2) still detects the takeover.
+        at(70, true); at(70.3, false, output: nil)
+        try expect(nudges.count == 2, "takeover was missed without per-app state")
+
+        // A missed start delivered as an immediate start/stop pair.
+        at(80, true); at(80, false)
+        try expect(nudges.count == 3, "a takeover too short to observe was missed")
+    }
+
+    private static func testMenuStatusText() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.22, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.22)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            var status: VolumeMemoryStatus?
+            controller.onStatusChanged = { status = $0 }
+            controller.start()
+            scheduler.advance(to: 10)
+
+            guard let settled = status else { throw TestFailure("no status") }
+            var lines = MenuStatusText.lines(for: settled, muted: false)
+            try expect(lines.title == "Test AirPods Pro", "title should be the device name, got \(lines.title)")
+            try expect(lines.detail == "下次连接时恢复到 22%", "detail: \(lines.detail)")
+            try expect(MenuStatusText.lines(for: settled, muted: true).detail == "已静音", "muted detail")
+
+            controller.pauseRestores(for: nil)
+            lines = MenuStatusText.lines(for: status!, muted: false)
+            try expect(lines.detail == "自动恢复已暂停，直到手动恢复", "paused detail: \(lines.detail)")
+
+            hardware.device = nil
+            hardware.notifyDefaultOutputChanged()
+            lines = MenuStatusText.lines(for: status!, muted: false)
+            try expect(lines.title == "当前没有可用的输出设备", "no-device title: \(lines.title)")
         }
     }
 

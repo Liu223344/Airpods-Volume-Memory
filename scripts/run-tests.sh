@@ -11,10 +11,14 @@ swiftc \
   -swift-version 5 \
   -framework CoreAudio \
   -framework UserNotifications \
+  -framework AppKit \
   -o "$TEST_BINARY" \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/AudioDevice.swift" \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/VolumeMemoryController.swift" \
   "$ROOT_DIR/Sources/AirpodVolumeMacApp/AppPreferences.swift" \
+  "$ROOT_DIR/Sources/AirpodVolumeMacApp/VolumeGauge.swift" \
+  "$ROOT_DIR/Sources/AirpodVolumeMacApp/MenuStatusText.swift" \
+  "$ROOT_DIR/Sources/AirpodVolumeMacApp/PlaybackStallDetector.swift" \
   "$ROOT_DIR/Tests/VolumeMemoryControllerTests.swift"
 
 "$TEST_BINARY"
