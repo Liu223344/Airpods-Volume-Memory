@@ -18,3 +18,15 @@ swiftc \
   "$ROOT_DIR/Tests/VolumeMemoryControllerTests.swift"
 
 "$TEST_BINARY"
+
+STARTUP_TEST_BINARY="$TEST_BUILD_DIR/StartupTests"
+swiftc \
+  -swift-version 5 \
+  -framework AppKit \
+  -framework ServiceManagement \
+  -o "$STARTUP_TEST_BINARY" \
+  "$ROOT_DIR/Sources/AirpodVolumeMacApp/SingleInstance.swift" \
+  "$ROOT_DIR/Sources/AirpodVolumeMacApp/LoginItemController.swift" \
+  "$ROOT_DIR/Tests/StartupTests.swift"
+
+"$STARTUP_TEST_BINARY"

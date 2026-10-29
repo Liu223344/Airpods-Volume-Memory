@@ -298,6 +298,7 @@ private struct ConnectionHistoryView: View {
         case .automaticRestoreOff: return "\(connected)  →  自动恢复已关闭"
         case .noRememberedVolume: return "\(connected)  →  已保存为初始音量"
         case .pending: return "\(connected)  →  正在恢复音量"
+        case .interrupted: return "\(connected)  →  恢复被中断"
         }
     }
 
@@ -308,6 +309,7 @@ private struct ConnectionHistoryView: View {
         case .paused: return "pause.circle.fill"
         case .pending: return "arrow.triangle.2.circlepath"
         case .automaticRestoreOff, .noRememberedVolume: return "minus.circle.fill"
+        case .interrupted: return "xmark.circle.fill"
         }
     }
 
@@ -316,7 +318,7 @@ private struct ConnectionHistoryView: View {
         case .restored: return .green
         case .failed: return .orange
         case .pending: return .accentColor
-        case .paused, .automaticRestoreOff, .noRememberedVolume: return .secondary
+        case .paused, .automaticRestoreOff, .noRememberedVolume, .interrupted: return .secondary
         }
     }
 }
@@ -376,12 +378,13 @@ private struct PreferencesView: View {
             }
 
             Section("通知") {
+                Toggle("连接 AirPods 时通知当前音量", isOn: $preferences.connectionNotificationEnabled)
                 Picker("音量恢复通知", selection: $preferences.restoreNotificationMode) {
                     ForEach(RestoreNotificationMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
-                Text("仅在最终确认音量恢复结果后发送通知。")
+                Text("通知在音量稳定、恢复结果确认后发送。开启连接通知时，连接时的恢复结果会合并到连接通知中，不再单独通知。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

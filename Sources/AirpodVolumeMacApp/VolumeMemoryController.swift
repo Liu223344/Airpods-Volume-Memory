@@ -7,6 +7,7 @@ enum RestoreHistoryOutcome: String, Codable {
     case paused
     case automaticRestoreOff
     case noRememberedVolume
+    case interrupted
 }
 
 struct RememberedAirPods: Codable, Identifiable, Equatable {
@@ -41,6 +42,17 @@ struct RestoreNotificationEvent {
     let deviceName: String
     let volume: Float?
     let succeeded: Bool
+    /// The automatic restore that ran because the AirPods just connected.
+    let isConnectionRestore: Bool
+}
+
+/// Sent once per connection, after the reconnect volume has settled.
+struct ConnectionNotificationEvent {
+    let deviceUID: String
+    let deviceName: String
+    let volume: Float?
+    let rememberedVolume: Float?
+    let outcome: RestoreHistoryOutcome
 }
 
 struct VolumeMemoryStatus {
@@ -54,6 +66,8 @@ struct VolumeMemoryStatus {
     let currentDeviceName: String?
     let restoresPaused: Bool
     let pauseDescription: String?
+    /// Reconnect or restore is still in progress, so the volume may be temporary.
+    let isSettling: Bool
 }
 
 struct VolumeMemoryConfiguration {
@@ -84,6 +98,7 @@ final class VolumeMemoryController {
     var onStatusChanged: ((VolumeMemoryStatus) -> Void)?
     var onDataChanged: ((VolumeMemoryDataSnapshot) -> Void)?
     var onRestoreNotification: ((RestoreNotificationEvent) -> Void)?
+    var onConnectionNotification: ((ConnectionNotificationEvent) -> Void)?
 
     private let defaults: UserDefaults
     private let audioHardware: AudioHardwareControlling
@@ -107,7 +122,10 @@ final class VolumeMemoryController {
     private var pendingPauseExpirationTask: VolumeMemoryScheduledTask?
     private var restoreTarget: Float?
     private var isRestoreInProgress = false
+    private var isManualRestore = false
     private var isConnectionSettling = false
+    private var connectionNotificationPending = false
+    private var lastTrackingNote: String?
     private var currentHistoryEntryID: UUID?
     private var rememberedDevices: [RememberedAirPods]
     private var connectionHistory: [AirPodsConnectionHistoryEntry]
@@ -130,6 +148,14 @@ final class VolumeMemoryController {
             from: defaults,
             key: connectionHistoryKey
         ) ?? []
+
+        // A restore cannot still be running at launch; the app quit or crashed during it.
+        if connectionHistory.contains(where: { $0.outcome == .pending }) {
+            for index in connectionHistory.indices where connectionHistory[index].outcome == .pending {
+                connectionHistory[index].outcome = .interrupted
+            }
+            encode(connectionHistory, key: connectionHistoryKey)
+        }
     }
 
     var automaticRestoreEnabled: Bool {
@@ -174,7 +200,7 @@ final class VolumeMemoryController {
     }
 
     func pauseRestores(for duration: TimeInterval?) {
-        let wasRestoreInProgress = isRestoreInProgress
+        let wasRestoreInProgress = isAutomaticRestoreInProgress
         cancelRestore()
         if let duration {
             defaults.set(now().addingTimeInterval(duration), forKey: restorePausedUntilKey)
@@ -252,7 +278,7 @@ final class VolumeMemoryController {
         }
 
         if !enabled {
-            let wasRestoreInProgress = isRestoreInProgress
+            let wasRestoreInProgress = isAutomaticRestoreInProgress
             cancelRestore()
             if wasRestoreInProgress {
                 markCurrentHistory(outcome: .automaticRestoreOff, restoredVolume: nil)
@@ -311,6 +337,7 @@ final class VolumeMemoryController {
         pendingPauseExpirationTask?.cancel()
         pendingPauseExpirationTask = nil
         isConnectionSettling = false
+        connectionNotificationPending = false
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
         defaultOutputListener?.invalidate()
@@ -337,7 +364,7 @@ final class VolumeMemoryController {
         }
 
         if !enabled {
-            let wasRestoreInProgress = isRestoreInProgress
+            let wasRestoreInProgress = isAutomaticRestoreInProgress
             cancelRestore()
             if wasRestoreInProgress {
                 markCurrentHistory(outcome: .automaticRestoreOff, restoredVolume: nil)
@@ -472,6 +499,7 @@ final class VolumeMemoryController {
             }
             return currentHistoryEntryID
         }()
+        let isNewConnection = reusableHistoryEntryID == nil
 
         cancelRestore()
         pendingSettlingTask?.cancel()
@@ -483,6 +511,10 @@ final class VolumeMemoryController {
         volumeListener = nil
         currentDevice = device
         currentHistoryEntryID = reusableHistoryEntryID
+        if isNewConnection {
+            connectionNotificationPending = false
+            lastTrackingNote = nil
+        }
         publishDataSnapshot()
 
         guard let device else {
@@ -495,6 +527,9 @@ final class VolumeMemoryController {
             return
         }
 
+        if isNewConnection {
+            connectionNotificationPending = true
+        }
         installVolumeListener(for: device)
         let currentVolume = try? normalizedVolume(audioHardware.outputVolume(for: device))
         let rememberedVolume = savedVolume(for: device)
@@ -562,6 +597,12 @@ final class VolumeMemoryController {
             }
             self.isConnectionSettling = false
             self.pendingSettlingTask = nil
+            // A running restore reports its own result when it finishes.
+            guard !self.isRestoreInProgress else {
+                return
+            }
+            self.publishCurrentStatus(for: device, note: self.lastTrackingNote)
+            self.deliverConnectionNotificationIfPending(for: device)
         }
     }
 
@@ -598,7 +639,11 @@ final class VolumeMemoryController {
         cancelRestore()
         restoreTarget = normalizedVolume(volume)
         isRestoreInProgress = true
-        markCurrentHistory(outcome: .pending, restoredVolume: nil)
+        isManualRestore = manuallyRequested
+        // A manual retry must not rewrite how this connection was originally handled.
+        if !manuallyRequested {
+            markCurrentHistory(outcome: .pending, restoredVolume: nil)
+        }
 
         let delays = configuration.restoreAttemptDelays.isEmpty ? [0] : configuration.restoreAttemptDelays
         for (index, delay) in delays.enumerated() {
@@ -662,17 +707,32 @@ final class VolumeMemoryController {
             return
         }
 
+        let wasManual = isManualRestore
+        let isConnectionRestore = !wasManual && connectionNotificationPending
         isRestoreInProgress = false
+        isManualRestore = false
         restoreTarget = nil
         pendingRestoreTasks.removeAll()
+        defer { deliverConnectionNotificationIfPending(for: device) }
+
+        func mark(_ outcome: RestoreHistoryOutcome, _ restoredVolume: Float?) {
+            if !wasManual {
+                markCurrentHistory(outcome: outcome, restoredVolume: restoredVolume)
+            }
+        }
 
         do {
             let currentVolume = normalizedVolume(try audioHardware.outputVolume(for: device))
             if volumesMatch(currentVolume, target) {
                 recordSuccessfulRestore(for: device, volume: currentVolume)
-                markCurrentHistory(outcome: .restored, restoredVolume: currentVolume)
+                mark(.restored, currentVolume)
                 onRestoreNotification?(
-                    RestoreNotificationEvent(deviceName: device.name, volume: currentVolume, succeeded: true)
+                    RestoreNotificationEvent(
+                        deviceName: device.name,
+                        volume: currentVolume,
+                        succeeded: true,
+                        isConnectionRestore: isConnectionRestore
+                    )
                 )
                 publishTrackingStatus(
                     for: device,
@@ -680,9 +740,14 @@ final class VolumeMemoryController {
                     note: "已恢复记忆音量并验证成功。"
                 )
             } else {
-                markCurrentHistory(outcome: .failed, restoredVolume: currentVolume)
+                mark(.failed, currentVolume)
                 onRestoreNotification?(
-                    RestoreNotificationEvent(deviceName: device.name, volume: currentVolume, succeeded: false)
+                    RestoreNotificationEvent(
+                        deviceName: device.name,
+                        volume: currentVolume,
+                        succeeded: false,
+                        isConnectionRestore: isConnectionRestore
+                    )
                 )
                 publish(
                     primary: "记忆音量未能保持。",
@@ -693,19 +758,51 @@ final class VolumeMemoryController {
                 )
             }
         } catch {
-            markCurrentHistory(outcome: .failed, restoredVolume: nil)
+            mark(.failed, nil)
             onRestoreNotification?(
-                RestoreNotificationEvent(deviceName: device.name, volume: nil, succeeded: false)
+                RestoreNotificationEvent(
+                    deviceName: device.name,
+                    volume: nil,
+                    succeeded: false,
+                    isConnectionRestore: isConnectionRestore
+                )
             )
             publishError(primary: "无法验证恢复后的音量。", error: error)
         }
     }
 
+    private var isAutomaticRestoreInProgress: Bool {
+        isRestoreInProgress && !isManualRestore
+    }
+
     private func cancelRestore() {
+        let wasAutomaticRestoreInProgress = isAutomaticRestoreInProgress
         pendingRestoreTasks.forEach { $0.cancel() }
         pendingRestoreTasks.removeAll()
         restoreTarget = nil
         isRestoreInProgress = false
+        isManualRestore = false
+        // Callers that know a more specific reason (pause, restore off) overwrite this.
+        if wasAutomaticRestoreInProgress {
+            markCurrentHistory(outcome: .interrupted, restoredVolume: nil)
+        }
+    }
+
+    private func deliverConnectionNotificationIfPending(for device: AudioDevice) {
+        guard connectionNotificationPending, isCurrentEndpoint(device) else {
+            return
+        }
+        connectionNotificationPending = false
+        let entry = currentHistoryEntryID.flatMap { id in connectionHistory.first { $0.id == id } }
+        onConnectionNotification?(
+            ConnectionNotificationEvent(
+                deviceUID: device.uid,
+                deviceName: device.name,
+                volume: try? normalizedVolume(audioHardware.outputVolume(for: device)),
+                rememberedVolume: savedVolume(for: device),
+                outcome: entry?.outcome ?? .pending
+            )
+        )
     }
 
     private func volumeChanged() {
@@ -752,6 +849,7 @@ final class VolumeMemoryController {
     }
 
     private func publishTrackingStatus(for device: AudioDevice, currentVolume: Float?, note: String?) {
+        lastTrackingNote = note
         let saved = savedVolume(for: device)
         let displayed = currentVolume ?? saved
         publish(
@@ -846,7 +944,8 @@ final class VolumeMemoryController {
                 automaticRestoreEnabled: automaticRestoreEnabled,
                 currentDeviceName: currentDevice?.isAirPods == true ? currentDevice?.name : nil,
                 restoresPaused: restoresPaused,
-                pauseDescription: pauseDescription
+                pauseDescription: pauseDescription,
+                isSettling: isRestoreInProgress || isConnectionSettling
             )
         )
     }
