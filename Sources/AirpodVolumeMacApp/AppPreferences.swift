@@ -51,6 +51,21 @@ final class AppPreferences: ObservableObject {
         }
     }
 
+    @Published var highVolumeWarningEnabled: Bool {
+        didSet {
+            defaults.set(highVolumeWarningEnabled, forKey: "highVolumeWarningEnabled")
+            onHighVolumeWarningChanged?()
+        }
+    }
+
+    @Published var highVolumeThreshold: Double {
+        didSet {
+            defaults.set(highVolumeThreshold, forKey: "highVolumeThreshold")
+            onHighVolumeWarningChanged?()
+        }
+    }
+
+    var onHighVolumeWarningChanged: (() -> Void)?
     var onMenuBarDisplayModeChanged: (() -> Void)?
     var onRestoreNotificationModeChanged: ((RestoreNotificationMode) -> Void)?
 
@@ -60,6 +75,11 @@ final class AppPreferences: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        highVolumeWarningEnabled = defaults.object(forKey: "highVolumeWarningEnabled") == nil
+            ? true : defaults.bool(forKey: "highVolumeWarningEnabled")
+        let threshold = defaults.object(forKey: "highVolumeThreshold") == nil
+            ? 60 : defaults.double(forKey: "highVolumeThreshold")
+        highVolumeThreshold = threshold.isFinite ? min(max(threshold, 1), 100) : 60
         menuBarDisplayMode = MenuBarDisplayMode(
             rawValue: defaults.string(forKey: menuBarDisplayModeKey) ?? ""
         ) ?? .compactText
@@ -73,6 +93,20 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
     override init() {
         super.init()
         UNUserNotificationCenter.current().delegate = self
+    }
+
+    func requestWarningAuthorization() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+    }
+
+    func deliverHighVolumeWarning(deviceName: String, percent: Int, threshold: Int) {
+        let content = UNMutableNotificationContent()
+        content.title = "AirPods 高音量提醒"
+        content.body = "\(deviceName) 当前音量为 \(percent)%，已超过设定的 \(threshold)%。可适当降低音量。"
+        // Silent banner: the warning itself should not add a loud sound.
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: "airpods-high-volume-warning", content: content, trigger: nil
+        ))
     }
 
     func modeChanged(_ mode: RestoreNotificationMode) {
@@ -113,5 +147,24 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+}
+
+/// Tracks threshold crossings independently of UI rendering frequency.
+struct HighVolumeWarningGate {
+    private var warnedDevice: String?
+
+    mutating func shouldWarn(deviceUID: String?, volume: Float?, enabled: Bool, threshold: Double) -> Bool {
+        guard enabled, let uid = deviceUID, let volume, volume.isFinite else {
+            warnedDevice = nil
+            return false
+        }
+        guard Double(volume) * 100 > threshold + 0.0001 else {
+            warnedDevice = nil
+            return false
+        }
+        guard warnedDevice != uid else { return false }
+        warnedDevice = uid
+        return true
     }
 }

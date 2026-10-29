@@ -69,6 +69,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private lazy var pauseRestoresItem = makePauseMenuItem()
     private var isRenderingStatus = false
     private var wakeObserver: NSObjectProtocol?
+    private var highVolumeWarningGate = HighVolumeWarningGate()
     private var lastStatus: VolumeMemoryStatus?
 
     override init() {
@@ -103,6 +104,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             queue: .main
         ) { [weak self] _ in
             self?.controller.handleSystemWake()
+        }
+        preferences.onHighVolumeWarningChanged = { [weak self] in
+            guard let self else { return }
+            if self.preferences.highVolumeWarningEnabled {
+                self.notificationManager.requestWarningAuthorization()
+            }
+            self.highVolumeWarningGate = HighVolumeWarningGate()
+            if let status = self.lastStatus { self.checkHighVolume(status) }
+        }
+        if preferences.highVolumeWarningEnabled {
+            notificationManager.requestWarningAuthorization()
         }
         controller.start()
     }
@@ -209,6 +221,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         defer { isRenderingStatus = false }
         lastStatus = status
 
+        checkHighVolume(status)
         renderMenuBar(status)
         statusMenuItem.title = status.primaryText
         detailMenuItem.title = status.secondaryText
@@ -231,6 +244,22 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         resumeRestoresItem.title = status.pauseDescription.map { "恢复自动调节（暂停：\($0)）" }
             ?? "恢复自动调节"
         deviceManagerViewModel.refreshRuntimeState()
+    }
+
+    private func checkHighVolume(_ status: VolumeMemoryStatus) {
+        let uid = status.canAdjustVolume ? controller.dataSnapshot().currentDeviceUID : nil
+        if highVolumeWarningGate.shouldWarn(
+            deviceUID: uid,
+            volume: status.currentVolume,
+            enabled: preferences.highVolumeWarningEnabled,
+            threshold: preferences.highVolumeThreshold
+        ), let volume = status.currentVolume {
+            notificationManager.deliverHighVolumeWarning(
+                deviceName: status.currentDeviceName ?? "AirPods",
+                percent: Int((min(max(volume, 0), 1) * 100).rounded()),
+                threshold: Int(preferences.highVolumeThreshold.rounded())
+            )
+        }
     }
 
     private func renderMenuBar(_ status: VolumeMemoryStatus) {

@@ -360,6 +360,21 @@ private struct PreferencesView: View {
                 }
             }
 
+            Section("高音量提醒") {
+                Toggle("超过阈值时提醒", isOn: $preferences.highVolumeWarningEnabled)
+                HStack {
+                    Text("提醒阈值")
+                    Slider(value: $preferences.highVolumeThreshold, in: 1...100, step: 1)
+                        .disabled(!preferences.highVolumeWarningEnabled)
+                    Text("\(Int(preferences.highVolumeThreshold))%")
+                        .monospacedDigit()
+                        .frame(width: 44)
+                }
+                Text("仅对识别到的 AirPods 和苹果蓝牙耳机提醒。超过阈值时提醒一次，降低至阈值以内后可再次触发。请在系统设置中允许本应用发送通知。音量百分比并非实际声压级。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("通知") {
                 Picker("音量恢复通知", selection: $preferences.restoreNotificationMode) {
                     ForEach(RestoreNotificationMode.allCases) { mode in

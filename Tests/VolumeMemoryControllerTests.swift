@@ -5,6 +5,7 @@ import Foundation
 enum VolumeMemoryControllerTestRunner {
     static func main() throws {
         let tests: [(String, () throws -> Void)] = [
+            ("high volume threshold crossings", testHighVolumeWarning),
             ("restore retries and verifies", testRestoreUsesMultipleAttemptsAndVerifiesTheResult),
             ("reconnect noise preserves memory", testReconnectNoiseDoesNotOverwriteRememberedVolume),
             ("slider cancels pending restore", testSliderChangeCancelsPendingReconnectRestore),
@@ -30,6 +31,32 @@ enum VolumeMemoryControllerTestRunner {
         }
 
         print("\n\(tests.count) tests passed")
+    }
+
+    private static func testHighVolumeWarning() throws {
+        var gate = HighVolumeWarningGate()
+        func check(_ volume: Float?, _ uid: String? = "A", _ enabled: Bool = true) -> Bool {
+            gate.shouldWarn(deviceUID: uid, volume: volume, enabled: enabled, threshold: 60)
+        }
+        try expect(!check(0.6), "equal threshold must not warn")
+        try expect(check(0.61), "crossing above threshold must warn")
+        try expect(!check(0.8), "remaining high must not repeat")
+        try expect(!check(0.9), "refresh must not repeat")
+        try expect(!check(0.5), "lowering must rearm silently")
+        try expect(check(0.7), "new crossing must warn")
+        try expect(check(0.7, "B"), "different device must warn independently")
+        try expect(!check(0.9, nil), "non-AirPods must not warn")
+        try expect(!check(0.9, "A", false), "disabled must not warn")
+        try expect(!check(nil), "unavailable volume must not warn")
+        try expect(!check(.nan), "invalid volume must not warn")
+        try withDefaults { defaults in
+            let prefs = AppPreferences(defaults: defaults)
+            try expect(prefs.highVolumeWarningEnabled && prefs.highVolumeThreshold == 60, "warning defaults")
+            prefs.highVolumeThreshold = 35
+            prefs.highVolumeWarningEnabled = false
+            let restored = AppPreferences(defaults: defaults)
+            try expect(!restored.highVolumeWarningEnabled && restored.highVolumeThreshold == 35, "warning preferences must persist")
+        }
     }
 
     private static func testRestoreUsesMultipleAttemptsAndVerifiesTheResult() throws {
