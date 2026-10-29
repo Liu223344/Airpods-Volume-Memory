@@ -124,6 +124,20 @@ enum AudioHardware {
         return try device(for: deviceID)
     }
 
+    static func outputMuted(for deviceID: AudioDeviceID) -> Bool {
+        for element in [mainElement, AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)] {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute, mScope: outputScope, mElement: element
+            )
+            guard hasProperty(objectID: deviceID, address: address) else { continue }
+            var muted: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            if AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &muted) == noErr,
+               muted != 0 { return true }
+        }
+        return false
+    }
+
     static func outputVolume(for device: AudioDevice) throws -> Float {
         try outputVolume(for: device.id)
     }
@@ -238,7 +252,11 @@ enum AudioHardware {
 
     private static func volumeAddresses(for deviceID: AudioDeviceID) -> [AudioObjectPropertyAddress] {
         [mainElement, AudioObjectPropertyElement(1), AudioObjectPropertyElement(2)]
-            .map { volumeAddress(element: $0) }
+            .flatMap { element in
+                [volumeAddress(element: element), AudioObjectPropertyAddress(
+                    mSelector: kAudioDevicePropertyMute, mScope: outputScope, mElement: element
+                )]
+            }
             .filter { hasProperty(objectID: AudioObjectID(deviceID), address: $0) }
     }
 

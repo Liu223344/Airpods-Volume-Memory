@@ -216,6 +216,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         return menuItem
     }
 
+    private var outputIsMuted: Bool {
+        guard let device = try? AudioHardware.defaultOutputDevice() else { return false }
+        return AudioHardware.outputMuted(for: device.id)
+    }
+
     private func render(_ status: VolumeMemoryStatus) {
         isRenderingStatus = true
         defer { isRenderingStatus = false }
@@ -224,12 +229,13 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         checkHighVolume(status)
         renderMenuBar(status)
         statusMenuItem.title = status.primaryText
-        detailMenuItem.title = status.secondaryText
+        detailMenuItem.title = outputIsMuted
+            ? "当前已静音；取消静音后使用原来的音量。" : status.secondaryText
 
         if let currentVolume = status.currentVolume {
             let percent = Int((min(max(currentVolume, 0), 1) * 100).rounded())
             volumeSlider.doubleValue = Double(percent)
-            volumeValueLabel.stringValue = "\(percent)%"
+            volumeValueLabel.stringValue = outputIsMuted ? "静音" : "\(percent)%"
         } else {
             volumeSlider.doubleValue = 0
             volumeValueLabel.stringValue = "--"
@@ -251,7 +257,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if highVolumeWarningGate.shouldWarn(
             deviceUID: uid,
             volume: status.currentVolume,
-            enabled: preferences.highVolumeWarningEnabled,
+            enabled: preferences.highVolumeWarningEnabled && !outputIsMuted,
             threshold: preferences.highVolumeThreshold
         ), let volume = status.currentVolume {
             notificationManager.deliverHighVolumeWarning(
@@ -264,6 +270,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func renderMenuBar(_ status: VolumeMemoryStatus) {
         guard let button = statusItem.button else { return }
+        let muted = outputIsMuted
         let percent = status.currentVolume.map { Int((min(max($0, 0), 1) * 100).rounded()) }
         let icon = NSImage(systemSymbolName: "airpodspro", accessibilityDescription: "AirPods 音量")
         icon?.isTemplate = true
@@ -274,19 +281,19 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             button.title = ""
         case .iconAndPercentage:
             button.image = icon
-            button.title = percent.map { " \($0)%" } ?? ""
+            button.title = muted ? " 静音" : (percent.map { " \($0)%" } ?? "")
         case .compactText:
             button.image = nil
-            button.title = status.menuBarTitle
+            button.title = muted && status.canAdjustVolume ? "AirPods 静音" : status.menuBarTitle
         case .deviceName:
             button.image = nil
             if let name = status.currentDeviceName, let percent {
-                button.title = "\(name) \(percent)%"
+                button.title = muted ? "\(name) 静音" : "\(name) \(percent)%"
             } else {
                 button.title = "AirPods Vol"
             }
         }
-        button.toolTip = status.primaryText
+        button.toolTip = muted ? "当前已静音" : status.primaryText
     }
 
     private func makeMenuItem(
