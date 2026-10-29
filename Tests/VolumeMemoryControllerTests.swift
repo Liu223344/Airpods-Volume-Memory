@@ -55,7 +55,7 @@ enum VolumeMemoryControllerTestRunner {
             try expect(hardware.setVolumes == [0.25, 0.25, 0.25], "expected three restore passes")
             try expect(hardware.volume == 0.25, "final volume should match memory")
             try expect(
-                latestStatus?.primaryText == "Restored and verified the remembered volume.",
+                latestStatus?.primaryText == "已恢复记忆音量并验证成功。",
                 "successful verification should be reported"
             )
         }

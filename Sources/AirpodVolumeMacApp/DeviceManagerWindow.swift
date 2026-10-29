@@ -75,7 +75,7 @@ final class DeviceManagerWindowController: NSObject, NSWindowDelegate {
             let rootView = DeviceManagerRootView(viewModel: viewModel)
             let hostingController = NSHostingController(rootView: rootView)
             let window = NSWindow(contentViewController: hostingController)
-            window.title = "AirPods Volume"
+            window.title = "AirPods 音量"
             window.setContentSize(NSSize(width: 720, height: 520))
             window.minSize = NSSize(width: 620, height: 440)
             window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -102,11 +102,11 @@ private struct DeviceManagerRootView: View {
     var body: some View {
         TabView {
             DevicesView(viewModel: viewModel)
-                .tabItem { Label("Devices", systemImage: "airpodspro") }
+                .tabItem { Label("设备", systemImage: "airpodspro") }
             ConnectionHistoryView(viewModel: viewModel)
-                .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+                .tabItem { Label("历史记录", systemImage: "clock.arrow.circlepath") }
             PreferencesView(viewModel: viewModel, preferences: viewModel.preferences)
-                .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tabItem { Label("设置", systemImage: "gearshape") }
         }
         .padding(20)
         .frame(minWidth: 620, minHeight: 440)
@@ -120,17 +120,17 @@ private struct DevicesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Remembered AirPods")
+                Text("已记忆的 AirPods")
                     .font(.title2.weight(.semibold))
-                Text("Each device keeps its own volume and restore preference.")
+                Text("每台设备分别保存音量和自动恢复设置。")
                     .foregroundStyle(.secondary)
             }
 
             if viewModel.snapshot.devices.isEmpty {
                 EmptyStateView(
                     icon: "airpodspro",
-                    title: "No remembered devices",
-                    message: "Connect AirPods and set their volume to add them here."
+                    title: "暂无记忆设备",
+                    message: "连接 AirPods 并调整音量，即可添加设备。"
                 )
             } else {
                 ScrollView {
@@ -143,19 +143,19 @@ private struct DevicesView: View {
                 }
             }
         }
-        .alert("Forget this device?", isPresented: Binding(
+        .alert("忘记这台设备？", isPresented: Binding(
             get: { deviceToForget != nil },
             set: { if !$0 { deviceToForget = nil } }
         )) {
-            Button("Cancel", role: .cancel) { deviceToForget = nil }
-            Button("Forget", role: .destructive) {
+            Button("取消", role: .cancel) { deviceToForget = nil }
+            Button("忘记", role: .destructive) {
                 if let deviceToForget {
                     viewModel.forgetDevice(deviceToForget.uid)
                 }
                 deviceToForget = nil
             }
         } message: {
-            Text("Its remembered volume will be removed. Connection history is kept.")
+            Text("将删除该设备的记忆音量，连接记录仍会保留。")
         }
     }
 
@@ -171,13 +171,13 @@ private struct DevicesView: View {
                     HStack(spacing: 8) {
                         Text(device.name).font(.headline)
                         if isConnected {
-                            Text("CONNECTED")
+                            Text("已连接")
                                 .font(.caption2.weight(.bold))
                                 .foregroundStyle(.green)
                         }
                     }
                     if let date = device.lastConnectedAt {
-                        Text("Last connected \(date, style: .relative)")
+                        Text("上次连接：\(date, style: .relative)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -189,7 +189,7 @@ private struct DevicesView: View {
                     Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("Forget this device")
+                .help("忘记此设备")
             }
 
             HStack(spacing: 12) {
@@ -209,7 +209,7 @@ private struct DevicesView: View {
 
             HStack {
                 Toggle(
-                    "Restore automatically for this device",
+                    "自动恢复此设备的音量",
                     isOn: Binding(
                         get: { device.automaticRestoreEnabled },
                         set: { viewModel.setAutomaticRestore($0, for: device.uid) }
@@ -218,7 +218,7 @@ private struct DevicesView: View {
                 .toggleStyle(.switch)
                 Spacer()
                 if let restored = device.lastRestoredVolume {
-                    Text("Last restored to \(Int((restored * 100).rounded()))%")
+                    Text("上次恢复至：\(Int((restored * 100).rounded()))%")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -237,21 +237,21 @@ private struct ConnectionHistoryView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Connection History")
+                    Text("连接记录")
                         .font(.title2.weight(.semibold))
-                    Text("The most recent 100 AirPods connections are kept locally.")
+                    Text("最近 100 条 AirPods 连接记录保存在本机。")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Clear History", role: .destructive) { confirmsClear = true }
+                Button("清空记录", role: .destructive) { confirmsClear = true }
                     .disabled(viewModel.snapshot.history.isEmpty)
             }
 
             if viewModel.snapshot.history.isEmpty {
                 EmptyStateView(
                     icon: "clock.arrow.circlepath",
-                    title: "No connection history",
-                    message: "Connections and restore results will appear here."
+                    title: "暂无连接记录",
+                    message: "连接记录和音量恢复结果会显示在这里。"
                 )
             } else {
                 List(viewModel.snapshot.history) { entry in
@@ -278,26 +278,26 @@ private struct ConnectionHistoryView: View {
                 .listStyle(.inset)
             }
         }
-        .alert("Clear connection history?", isPresented: $confirmsClear) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) { viewModel.clearHistory() }
+        .alert("清空连接记录？", isPresented: $confirmsClear) {
+            Button("取消", role: .cancel) {}
+            Button("清空", role: .destructive) { viewModel.clearHistory() }
         } message: {
-            Text("Remembered devices and volumes will not be affected.")
+            Text("不会影响已记忆的设备和音量。")
         }
     }
 
     private func historyDescription(_ entry: AirPodsConnectionHistoryEntry) -> String {
-        let connected = entry.connectedVolume.map { "Connected at \(Int(($0 * 100).rounded()))%" }
-            ?? "Connected volume unavailable"
+        let connected = entry.connectedVolume.map { "连接时音量：\(Int(($0 * 100).rounded()))%" }
+            ?? "无法读取连接时的音量"
         switch entry.outcome {
         case .restored:
-            let restored = entry.restoredVolume.map { "\(Int(($0 * 100).rounded()))%" } ?? "an unknown level"
-            return "\(connected)  →  restored to \(restored)"
-        case .failed: return "\(connected)  →  restore did not stick"
-        case .paused: return "\(connected)  →  skipped while paused"
-        case .automaticRestoreOff: return "\(connected)  →  automatic restore was off"
-        case .noRememberedVolume: return "\(connected)  →  saved as the initial level"
-        case .pending: return "\(connected)  →  restore in progress"
+            let restored = entry.restoredVolume.map { "\(Int(($0 * 100).rounded()))%" } ?? "未知音量"
+            return "\(connected)  →  已恢复至 \(restored)"
+        case .failed: return "\(connected)  →  恢复未生效"
+        case .paused: return "\(connected)  →  暂停期间跳过"
+        case .automaticRestoreOff: return "\(connected)  →  自动恢复已关闭"
+        case .noRememberedVolume: return "\(connected)  →  已保存为初始音量"
+        case .pending: return "\(connected)  →  正在恢复音量"
         }
     }
 
@@ -327,52 +327,52 @@ private struct PreferencesView: View {
 
     var body: some View {
         Form {
-            Section("Restoration") {
+            Section("音量恢复") {
                 Toggle(
-                    "Restore automatically when AirPods connect",
+                    "连接 AirPods 时自动恢复音量",
                     isOn: Binding(
                         get: { viewModel.automaticRestoreEnabled },
                         set: { viewModel.setGlobalAutomaticRestore($0) }
                     )
                 )
 
-                LabeledContent("Temporary pause") {
+                LabeledContent("临时暂停") {
                     if viewModel.restoresPaused {
                         HStack {
-                            Text(viewModel.pauseSummary ?? "Paused").foregroundStyle(.secondary)
-                            Button("Resume") { viewModel.resume() }
+                            Text(viewModel.pauseSummary ?? "已暂停").foregroundStyle(.secondary)
+                            Button("恢复") { viewModel.resume() }
                         }
                     } else {
-                        Menu("Pause…") {
-                            Button("For 15 Minutes") { viewModel.pause(for: 15 * 60) }
-                            Button("For 1 Hour") { viewModel.pause(for: 60 * 60) }
-                            Button("Until Resumed") { viewModel.pause(for: nil) }
+                        Menu("暂停…") {
+                            Button("暂停 15 分钟") { viewModel.pause(for: 15 * 60) }
+                            Button("暂停 1 小时") { viewModel.pause(for: 60 * 60) }
+                            Button("暂停直到手动恢复") { viewModel.pause(for: nil) }
                         }
                     }
                 }
             }
 
-            Section("Appearance") {
-                Picker("Menu bar display", selection: $preferences.menuBarDisplayMode) {
+            Section("外观") {
+                Picker("菜单栏显示", selection: $preferences.menuBarDisplayMode) {
                     ForEach(MenuBarDisplayMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
             }
 
-            Section("Notifications") {
-                Picker("Restore notifications", selection: $preferences.restoreNotificationMode) {
+            Section("通知") {
+                Picker("音量恢复通知", selection: $preferences.restoreNotificationMode) {
                     ForEach(RestoreNotificationMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
-                Text("Notifications are sent only after the final restore verification.")
+                Text("仅在最终确认音量恢复结果后发送通知。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Privacy") {
-                Text("Device memory and connection history stay on this Mac. Nothing is uploaded.")
+            Section("隐私") {
+                Text("设备记忆和连接记录仅保存在这台 Mac 上，不会上传。")
                     .foregroundStyle(.secondary)
             }
         }

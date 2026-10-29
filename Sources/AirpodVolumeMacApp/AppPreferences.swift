@@ -12,10 +12,10 @@ enum MenuBarDisplayMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .iconOnly: return "Icon only"
-        case .iconAndPercentage: return "Icon and percentage"
-        case .compactText: return "AirPods and percentage"
-        case .deviceName: return "Device name and percentage"
+        case .iconOnly: return "仅图标"
+        case .iconAndPercentage: return "图标和百分比"
+        case .compactText: return "AirPods 和百分比"
+        case .deviceName: return "设备名称和百分比"
         }
     }
 }
@@ -29,9 +29,9 @@ enum RestoreNotificationMode: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .off: return "Off"
-        case .failuresOnly: return "Failures only"
-        case .allResults: return "All restore results"
+        case .off: return "关闭"
+        case .failuresOnly: return "仅失败时通知"
+        case .allResults: return "所有恢复结果"
         }
     }
 }
@@ -88,14 +88,14 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         }
 
         let content = UNMutableNotificationContent()
-        content.title = event.succeeded ? "AirPods Volume Restored" : "AirPods Restore Failed"
+        content.title = event.succeeded ? "AirPods 音量已恢复" : "AirPods 音量恢复失败"
         if let volume = event.volume {
             let percent = Int((min(max(volume, 0), 1) * 100).rounded())
             content.body = event.succeeded
-                ? "\(event.deviceName) was restored to \(percent)%."
-                : "\(event.deviceName) remained at \(percent)%. Open AirPods Volume to retry."
+                ? "\(event.deviceName) 已恢复至 \(percent)%."
+                : "\(event.deviceName) 仍为 \(percent)%。请打开 AirPods 音量重试。"
         } else {
-            content.body = "Could not verify the volume for \(event.deviceName). Open AirPods Volume to retry."
+            content.body = "无法验证音量：\(event.deviceName). 请打开 AirPods 音量重试。"
         }
         content.sound = event.succeeded ? nil : .default
 

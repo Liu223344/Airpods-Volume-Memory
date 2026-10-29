@@ -155,12 +155,12 @@ final class VolumeMemoryController {
 
     var pauseDescription: String? {
         if defaults.bool(forKey: restorePausedIndefinitelyKey) {
-            return "until resumed"
+            return "直到手动恢复"
         }
         guard restoresPaused, let until = defaults.object(forKey: restorePausedUntilKey) as? Date else {
             return nil
         }
-        return "until \(Self.pauseDateFormatter.string(from: until))"
+        return "直到 \(Self.pauseDateFormatter.string(from: until))"
     }
 
     func dataSnapshot() -> VolumeMemoryDataSnapshot {
@@ -190,7 +190,7 @@ final class VolumeMemoryController {
             if wasRestoreInProgress {
                 markCurrentHistory(outcome: .paused, restoredVolume: nil)
             }
-            publishCurrentStatus(for: device, note: "Automatic restores are paused \(pauseDescription ?? "temporarily").")
+            publishCurrentStatus(for: device, note: "自动恢复已暂停：\(pauseDescription ?? "临时").")
         } else {
             publishWaitingForAirPods()
         }
@@ -211,7 +211,7 @@ final class VolumeMemoryController {
            let rememberedVolume = savedVolume(for: device) {
             beginRestore(rememberedVolume, for: device, manuallyRequested: false)
         } else {
-            publishCurrentStatus(for: device, note: "Automatic restores resumed.")
+            publishCurrentStatus(for: device, note: "已恢复自动调节。")
         }
     }
 
@@ -233,10 +233,10 @@ final class VolumeMemoryController {
             publishTrackingStatus(
                 for: device,
                 currentVolume: adjustedVolume,
-                note: "Updated this device's remembered volume."
+                note: "已更新此设备的记忆音量。"
             )
         } catch {
-            publishError(primary: "Saved the remembered volume, but could not apply it.", error: error)
+            publishError(primary: "已保存记忆音量，但无法应用。", error: error)
         }
     }
 
@@ -257,11 +257,11 @@ final class VolumeMemoryController {
             if wasRestoreInProgress {
                 markCurrentHistory(outcome: .automaticRestoreOff, restoredVolume: nil)
             }
-            publishCurrentStatus(for: device, note: "Automatic restore is off for this device.")
+            publishCurrentStatus(for: device, note: "此设备的自动恢复已关闭。")
         } else if automaticRestoreEnabled, !restoresPaused, let rememberedVolume = savedVolume(for: device) {
             beginRestore(rememberedVolume, for: device, manuallyRequested: false)
         } else {
-            publishCurrentStatus(for: device, note: "Automatic restore is on for this device.")
+            publishCurrentStatus(for: device, note: "此设备的自动恢复已开启。")
         }
     }
 
@@ -274,7 +274,7 @@ final class VolumeMemoryController {
         persistDevices()
 
         if let device = currentDevice, device.uid == deviceUID {
-            publishCurrentStatus(for: device, note: "Forgot the remembered volume.")
+            publishCurrentStatus(for: device, note: "已删除记忆音量。")
         }
     }
 
@@ -297,7 +297,7 @@ final class VolumeMemoryController {
             reconcileDefaultOutputDevice(force: true)
         } catch {
             publishError(
-                primary: "Could not start the audio watcher.",
+                primary: "无法启动声音设备监听。",
                 error: error,
                 canAdjustVolume: false
             )
@@ -342,20 +342,20 @@ final class VolumeMemoryController {
             if wasRestoreInProgress {
                 markCurrentHistory(outcome: .automaticRestoreOff, restoredVolume: nil)
             }
-            publishCurrentStatus(for: device, note: "Automatic restore is off.")
+            publishCurrentStatus(for: device, note: "自动恢复已关闭。")
         } else if restoresPaused {
             cancelRestore()
             publishCurrentStatus(
                 for: device,
-                note: "Automatic restore is on, but paused \(pauseDescription ?? "temporarily")."
+                note: "自动恢复已开启，但已暂停：\(pauseDescription ?? "临时")."
             )
         } else if !deviceAutomaticRestoreEnabled(device.uid) {
             cancelRestore()
-            publishCurrentStatus(for: device, note: "Automatic restore is off for this device.")
+            publishCurrentStatus(for: device, note: "此设备的自动恢复已关闭。")
         } else if let rememberedVolume = savedVolume(for: device) {
             beginRestore(rememberedVolume, for: device, manuallyRequested: false)
         } else {
-            publishCurrentStatus(for: device, note: "Automatic restore is on. Save a volume first.")
+            publishCurrentStatus(for: device, note: "自动恢复已开启，请先保存音量。")
         }
     }
 
@@ -372,9 +372,9 @@ final class VolumeMemoryController {
             currentDevice = device
             let volume = normalizedVolume(try audioHardware.outputVolume(for: device))
             save(volume, for: device)
-            publishTrackingStatus(for: device, currentVolume: volume, note: "Saved current volume.")
+            publishTrackingStatus(for: device, currentVolume: volume, note: "已保存当前音量。")
         } catch {
-            publishError(primary: "Could not save the current volume.", error: error)
+            publishError(primary: "无法保存当前音量。", error: error)
         }
     }
 
@@ -389,13 +389,13 @@ final class VolumeMemoryController {
 
             currentDevice = device
             guard let rememberedVolume = savedVolume(for: device) else {
-                publishCurrentStatus(for: device, note: "No remembered volume yet. Save one first.")
+                publishCurrentStatus(for: device, note: "暂无记忆音量，请先保存。")
                 return
             }
 
             beginRestore(rememberedVolume, for: device, manuallyRequested: true)
         } catch {
-            publishError(primary: "Could not restore the remembered volume.", error: error)
+            publishError(primary: "无法恢复记忆音量。", error: error)
         }
     }
 
@@ -408,7 +408,7 @@ final class VolumeMemoryController {
             }
             forgetDevice(device.uid)
         } catch {
-            publishError(primary: "Could not forget the remembered volume.", error: error)
+            publishError(primary: "无法删除记忆音量。", error: error)
         }
     }
 
@@ -426,9 +426,9 @@ final class VolumeMemoryController {
             let clampedVolume = normalizedVolume(volume)
             try audioHardware.setOutputVolume(clampedVolume, for: device)
             save(clampedVolume, for: device)
-            publishTrackingStatus(for: device, currentVolume: clampedVolume, note: "Set and saved volume.")
+            publishTrackingStatus(for: device, currentVolume: clampedVolume, note: "已调整并保存音量。")
         } catch {
-            publishError(primary: "Could not set the AirPods volume.", error: error)
+            publishError(primary: "无法调整 AirPods 音量。", error: error)
         }
     }
 
@@ -440,7 +440,7 @@ final class VolumeMemoryController {
                     if device.isAirPods {
                         publishCurrentStatus(
                             for: device,
-                            note: isRestoreInProgress ? "Stabilizing the remembered volume…" : nil
+                            note: isRestoreInProgress ? "正在稳定记忆音量…" : nil
                         )
                     } else {
                         publishWaitingForAirPods()
@@ -455,7 +455,7 @@ final class VolumeMemoryController {
         } catch {
             currentDevice = nil
             publishError(
-                primary: "Could not read the current output device.",
+                primary: "无法读取当前输出设备。",
                 error: error,
                 canAdjustVolume: false
             )
@@ -507,7 +507,7 @@ final class VolumeMemoryController {
                 publishTrackingStatus(
                     for: device,
                     currentVolume: currentVolume,
-                    note: "Connected; restores are paused \(pauseDescription ?? "temporarily")."
+                    note: "已连接；自动恢复已暂停：\(pauseDescription ?? "临时")."
                 )
             } else if automaticRestoreEnabled, deviceAutomaticRestoreEnabled(device.uid) {
                 beginRestore(rememberedVolume, for: device, manuallyRequested: false)
@@ -517,8 +517,8 @@ final class VolumeMemoryController {
                     for: device,
                     currentVolume: currentVolume,
                     note: automaticRestoreEnabled
-                        ? "Connected; automatic restore is off for this device."
-                        : "Connected; automatic restore is off."
+                        ? "已连接；此设备的自动恢复已关闭。"
+                        : "已连接；自动恢复已关闭。"
                 )
             }
         } else if let currentVolume {
@@ -527,13 +527,13 @@ final class VolumeMemoryController {
             publishTrackingStatus(
                 for: device,
                 currentVolume: currentVolume,
-                note: "Saved this device's initial volume."
+                note: "已保存此设备的初始音量。"
             )
         } else {
             markCurrentHistory(outcome: .noRememberedVolume, restoredVolume: nil)
             publish(
-                primary: "Tracking \(device.name).",
-                secondary: "Set its volume once and the app will remember it.",
+                primary: "正在记忆：\(device.name).",
+                secondary: "调整一次音量，应用即可记住。",
                 currentVolume: nil,
                 canAdjustVolume: true,
                 hasRememberedVolume: false
@@ -586,7 +586,7 @@ final class VolumeMemoryController {
             if let device = self.currentDevice, device.isAirPods {
                 self.publishCurrentStatus(
                     for: device,
-                    note: "Temporary pause ended; automatic restore is ready for the next connection."
+                    note: "暂停已结束，下次连接时将自动恢复音量。"
                 )
             } else {
                 self.publishWaitingForAirPods()
@@ -618,10 +618,10 @@ final class VolumeMemoryController {
 
         let target = restoreTarget ?? volume
         publish(
-            primary: "Restoring \(device.name) to \(percent(target)).",
+            primary: "正在恢复：\(device.name) 至 \(percent(target)).",
             secondary: manuallyRequested
-                ? "Applying and verifying the remembered volume."
-                : "Bluetooth audio is settling; the app will verify the result.",
+                ? "正在应用并验证记忆音量。"
+                : "正在等待蓝牙音频就绪，随后验证音量。",
             currentVolume: try? normalizedVolume(audioHardware.outputVolume(for: device)),
             canAdjustVolume: true,
             hasRememberedVolume: true
@@ -639,8 +639,8 @@ final class VolumeMemoryController {
             try audioHardware.setOutputVolume(target, for: device)
             let observed = try? normalizedVolume(audioHardware.outputVolume(for: device))
             publish(
-                primary: "Restoring \(device.name) to \(percent(target)).",
-                secondary: "Verification pass \(index + 1) of \(totalAttempts).",
+                primary: "正在恢复：\(device.name) 至 \(percent(target)).",
+                secondary: "验证次数：\(index + 1) / \(totalAttempts).",
                 currentVolume: observed ?? target,
                 canAdjustVolume: true,
                 hasRememberedVolume: true
@@ -648,8 +648,8 @@ final class VolumeMemoryController {
         } catch {
             let willRetry = index + 1 < totalAttempts
             publish(
-                primary: willRetry ? "AirPods are still becoming ready." : "The last restore attempt failed.",
-                secondary: willRetry ? "The app will retry automatically." : error.localizedDescription,
+                primary: willRetry ? "AirPods 尚未就绪。" : "最后一次恢复尝试失败。",
+                secondary: willRetry ? "应用将自动重试。" : error.localizedDescription,
                 currentVolume: try? normalizedVolume(audioHardware.outputVolume(for: device)),
                 canAdjustVolume: true,
                 hasRememberedVolume: true
@@ -677,7 +677,7 @@ final class VolumeMemoryController {
                 publishTrackingStatus(
                     for: device,
                     currentVolume: currentVolume,
-                    note: "Restored and verified the remembered volume."
+                    note: "已恢复记忆音量并验证成功。"
                 )
             } else {
                 markCurrentHistory(outcome: .failed, restoredVolume: currentVolume)
@@ -685,8 +685,8 @@ final class VolumeMemoryController {
                     RestoreNotificationEvent(deviceName: device.name, volume: currentVolume, succeeded: false)
                 )
                 publish(
-                    primary: "The remembered volume did not stick.",
-                    secondary: "Choose Restore Remembered Volume to try again.",
+                    primary: "记忆音量未能保持。",
+                    secondary: "请选择“恢复记忆音量”重试。",
                     currentVolume: currentVolume,
                     canAdjustVolume: true,
                     hasRememberedVolume: true
@@ -697,7 +697,7 @@ final class VolumeMemoryController {
             onRestoreNotification?(
                 RestoreNotificationEvent(deviceName: device.name, volume: nil, succeeded: false)
             )
-            publishError(primary: "Could not verify the restored volume.", error: error)
+            publishError(primary: "无法验证恢复后的音量。", error: error)
         }
     }
 
@@ -725,8 +725,8 @@ final class VolumeMemoryController {
             let volume = normalizedVolume(try audioHardware.outputVolume(for: device))
             guard !isRestoreInProgress, !isConnectionSettling else {
                 publish(
-                    primary: "Stabilizing \(device.name) at \(percent(restoreTarget ?? volume)).",
-                    secondary: "Temporary reconnect changes will not replace the remembered volume.",
+                    primary: "正在稳定：\(device.name) 于 \(percent(restoreTarget ?? volume)).",
+                    secondary: "重连时的临时音量变化不会覆盖记忆值。",
                     currentVolume: volume,
                     canAdjustVolume: true,
                     hasRememberedVolume: savedVolume(for: device) != nil
@@ -735,14 +735,14 @@ final class VolumeMemoryController {
             }
 
             if let saved = savedVolume(for: device), volumesMatch(saved, volume) {
-                publishTrackingStatus(for: device, currentVolume: volume, note: "Volume is up to date.")
+                publishTrackingStatus(for: device, currentVolume: volume, note: "音量已同步。")
                 return
             }
 
             save(volume, for: device)
-            publishTrackingStatus(for: device, currentVolume: volume, note: "Saved the new volume.")
+            publishTrackingStatus(for: device, currentVolume: volume, note: "已保存新音量。")
         } catch {
-            publishError(primary: "Could not save the changed volume.", error: error)
+            publishError(primary: "无法保存更改后的音量。", error: error)
         }
     }
 
@@ -755,9 +755,9 @@ final class VolumeMemoryController {
         let saved = savedVolume(for: device)
         let displayed = currentVolume ?? saved
         publish(
-            primary: note ?? "Tracking \(device.name).",
-            secondary: saved.map { "Remembered for next connection: \(percent($0))." }
-                ?? "Adjust the volume to create a remembered value.",
+            primary: note ?? "正在记忆：\(device.name).",
+            secondary: saved.map { "下次连接将恢复为：\(percent($0))." }
+                ?? "调整音量即可保存记忆值。",
             currentVolume: displayed,
             canAdjustVolume: true,
             hasRememberedVolume: saved != nil
@@ -793,8 +793,8 @@ final class VolumeMemoryController {
 
     private func publishNoOutputDevice() {
         publish(
-            primary: "No output device is active.",
-            secondary: "Connect your AirPods to start tracking.",
+            primary: "当前没有可用的输出设备。",
+            secondary: "连接 AirPods 即可开始记忆音量。",
             currentVolume: nil,
             canAdjustVolume: false,
             hasRememberedVolume: false
@@ -804,8 +804,8 @@ final class VolumeMemoryController {
     private func publishWaitingForAirPods() {
         let deviceName = currentDevice?.name
         publish(
-            primary: deviceName.map { "Current output: \($0)" } ?? "Waiting for AirPods.",
-            secondary: "AirPods and Apple Bluetooth headphones are detected automatically.",
+            primary: deviceName.map { "当前输出：\($0)" } ?? "等待 AirPods 连接。",
+            secondary: "自动识别 AirPods 和苹果蓝牙耳机。",
             currentVolume: nil,
             canAdjustVolume: false,
             hasRememberedVolume: false
