@@ -66,6 +66,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private let controller = VolumeMemoryController()
     private let preferences = AppPreferences()
     private let notificationManager = RestoreNotificationManager()
+    private let stallMonitor = PlaybackStallMonitor()
     private lazy var deviceManagerViewModel = DeviceManagerViewModel(
         controller: controller,
         preferences: preferences
@@ -144,6 +145,16 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         if preferences.anyNotificationEnabled {
             notificationManager.requestAuthorization()
         }
+        stallMonitor.isEnabled = { [weak self] in self?.preferences.fixSilentSwitchEnabled ?? false }
+        preferences.onFixSilentSwitchChanged = { [weak self] in
+            guard let self else { return }
+            self.updateStallMonitor()
+            if self.preferences.fixSilentSwitchEnabled && !AccessibilityAccess.isTrusted {
+                AccessibilityAccess.request()
+            }
+            self.deviceManagerViewModel.refreshRuntimeState()
+        }
+        updateStallMonitor()
         controller.start()
     }
 
@@ -154,7 +165,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     }
 
     func stop() {
+        stallMonitor.stop()
         controller.stop()
+    }
+
+    /// The iPhone-Mac switch fix only listens to the device while it is turned on.
+    private func updateStallMonitor() {
+        if preferences.fixSilentSwitchEnabled {
+            stallMonitor.start()
+        } else {
+            stallMonitor.stop()
+        }
     }
 
     private func configureStatusItem() {
@@ -297,7 +318,7 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         ), let volume = status.currentVolume {
             notificationManager.deliverHighVolumeWarning(
                 deviceName: status.currentDeviceName ?? "AirPods",
-                percent: Int((min(max(volume, 0), 1) * 100).rounded()),
+                volume: volume,
                 threshold: Int(preferences.highVolumeThreshold.rounded())
             )
         }

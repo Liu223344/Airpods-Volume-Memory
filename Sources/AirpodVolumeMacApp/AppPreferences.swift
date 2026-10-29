@@ -72,7 +72,15 @@ final class AppPreferences: ObservableObject {
         }
     }
 
+    @Published var fixSilentSwitchEnabled: Bool {
+        didSet {
+            defaults.set(fixSilentSwitchEnabled, forKey: fixSilentSwitchEnabledKey)
+            onFixSilentSwitchChanged?()
+        }
+    }
+
     var onHighVolumeWarningChanged: (() -> Void)?
+    var onFixSilentSwitchChanged: (() -> Void)?
     var onConnectionNotificationChanged: (() -> Void)?
     var onMenuBarDisplayModeChanged: (() -> Void)?
     var onRestoreNotificationModeChanged: ((RestoreNotificationMode) -> Void)?
@@ -81,6 +89,7 @@ final class AppPreferences: ObservableObject {
     private let menuBarDisplayModeKey = "menuBarDisplayMode"
     private let restoreNotificationModeKey = "restoreNotificationMode"
     private let connectionNotificationEnabledKey = "connectionNotificationEnabled"
+    private let fixSilentSwitchEnabledKey = "fixSilentSwitchEnabled"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -97,6 +106,8 @@ final class AppPreferences: ObservableObject {
         ) ?? .off
         connectionNotificationEnabled = defaults.object(forKey: connectionNotificationEnabledKey) == nil
             ? true : defaults.bool(forKey: connectionNotificationEnabledKey)
+        // Opt-in: it presses media keys, which not every setup needs.
+        fixSilentSwitchEnabled = defaults.bool(forKey: fixSilentSwitchEnabledKey)
     }
 
     var anyNotificationEnabled: Bool {
@@ -117,48 +128,17 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
     }
 
     func deliverConnection(_ event: ConnectionNotificationEvent, muted: Bool) {
-        let content = UNMutableNotificationContent()
-        content.title = "已连接 \(event.deviceName)"
-        let volumeText: String
-        if let volume = event.volume {
-            volumeText = muted ? "当前已静音（音量 \(percent(volume))）" : "当前音量 \(percent(volume))"
-        } else {
-            volumeText = "无法读取当前音量"
-        }
-        switch event.outcome {
-        case .restored:
-            content.body = "\(volumeText)，已恢复为记忆音量。"
-        case .failed:
-            let remembered = event.rememberedVolume.map { "记忆音量 \(percent($0)) " } ?? "记忆音量"
-            content.body = "\(volumeText)，\(remembered)未能保持。可在菜单中选择“恢复记忆音量”重试。"
-            content.sound = .default
-        case .paused:
-            content.body = "\(volumeText)。自动恢复已暂停。"
-        case .automaticRestoreOff:
-            content.body = "\(volumeText)。未自动恢复音量。"
-        case .noRememberedVolume:
-            content.body = "\(volumeText)，已记为此设备的初始音量。"
-        case .pending, .interrupted:
-            content.body = "\(volumeText)。"
-        }
+        let text = NotificationText.connection(event, muted: muted)
         // One banner per device: a quick reconnect replaces the previous one.
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "airpods-connected-\(event.deviceUID)", content: content, trigger: nil
-        ))
+        add(identifier: "airpods-connected-\(event.deviceUID)", text: text,
+            volume: event.volume, muted: muted, sound: event.outcome == .failed)
     }
 
-    private func percent(_ volume: Float) -> String {
-        "\(Int((min(max(volume, 0), 1) * 100).rounded()))%"
-    }
-
-    func deliverHighVolumeWarning(deviceName: String, percent: Int, threshold: Int) {
-        let content = UNMutableNotificationContent()
-        content.title = "AirPods 高音量提醒"
-        content.body = "\(deviceName) 当前音量为 \(percent)%，已超过设定的 \(threshold)%。可适当降低音量。"
+    func deliverHighVolumeWarning(deviceName: String, volume: Float, threshold: Int) {
         // Silent banner: the warning itself should not add a loud sound.
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "airpods-high-volume-warning", content: content, trigger: nil
-        ))
+        add(identifier: "airpods-high-volume-warning",
+            text: NotificationText.highVolume(deviceName: deviceName, volume: volume, threshold: threshold),
+            volume: volume, muted: false, sound: false)
     }
 
     func modeChanged(_ mode: RestoreNotificationMode) {
@@ -172,25 +152,33 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         guard mode == .allResults || (mode == .failuresOnly && !event.succeeded) else {
             return
         }
+        add(identifier: "airpods-volume-restore-\(UUID().uuidString)", text: NotificationText.restore(event),
+            volume: event.volume, muted: false, sound: !event.succeeded)
+    }
 
+    private func add(identifier: String, text: NotificationText, volume: Float?, muted: Bool, sound: Bool) {
         let content = UNMutableNotificationContent()
-        content.title = event.succeeded ? "AirPods 音量已恢复" : "AirPods 音量恢复失败"
-        if let volume = event.volume {
-            let percent = Int((min(max(volume, 0), 1) * 100).rounded())
-            content.body = event.succeeded
-                ? "\(event.deviceName) 已恢复至 \(percent)%."
-                : "\(event.deviceName) 仍为 \(percent)%。请打开 AirPods 音量重试。"
-        } else {
-            content.body = "无法验证音量：\(event.deviceName). 请打开 AirPods 音量重试。"
+        content.title = text.title
+        content.body = text.body
+        content.sound = sound ? .default : nil
+        if let attachment = gaugeAttachment(volume: volume, muted: muted) {
+            content.attachments = [attachment]
         }
-        content.sound = event.succeeded ? nil : .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(
+            identifier: identifier, content: content, trigger: nil
+        ))
+    }
 
-        let request = UNNotificationRequest(
-            identifier: "airpods-volume-restore-\(UUID().uuidString)",
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+    /// The volume ring shown on the right of the banner. The system moves the file
+    /// into its own store, so each notification gets a fresh temporary copy.
+    private func gaugeAttachment(volume: Float?, muted: Bool) -> UNNotificationAttachment? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("airpods-volume-\(UUID().uuidString).png")
+        guard let image = VolumeGauge.image(size: 256, style: VolumeGauge.notificationStyle(volume: volume, muted: muted)),
+              VolumeGauge.writePNG(image, to: url) else {
+            return nil
+        }
+        return try? UNNotificationAttachment(identifier: "gauge", url: url)
     }
 
     func userNotificationCenter(
@@ -199,6 +187,54 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         completionHandler([.banner, .sound])
+    }
+}
+
+/// Notification wording: the volume is the headline, the device and what
+/// happened go on the second line.
+struct NotificationText: Equatable {
+    let title: String
+    let body: String
+
+    static func connection(_ event: ConnectionNotificationEvent, muted: Bool) -> NotificationText {
+        let status: String
+        switch event.outcome {
+        case .restored: status = "已恢复记忆音量"
+        case .failed:
+            status = event.rememberedVolume.map { "未能恢复到 \(percent($0))，可在菜单中重试" }
+                ?? "恢复未生效，可在菜单中重试"
+        case .paused: status = "自动恢复已暂停"
+        case .automaticRestoreOff: status = "未自动恢复"
+        case .noRememberedVolume: status = "已记为初始音量"
+        case .pending, .interrupted: status = "已连接"
+        }
+        return NotificationText(title: headline(volume: event.volume, muted: muted), body: "\(event.deviceName) · \(status)")
+    }
+
+    static func restore(_ event: RestoreNotificationEvent) -> NotificationText {
+        let status: String
+        if event.succeeded {
+            status = "已恢复记忆音量"
+        } else {
+            status = event.volume == nil ? "无法验证音量，可在菜单中重试" : "恢复未生效，可在菜单中重试"
+        }
+        return NotificationText(title: headline(volume: event.volume, muted: false), body: "\(event.deviceName) · \(status)")
+    }
+
+    static func highVolume(deviceName: String, volume: Float, threshold: Int) -> NotificationText {
+        NotificationText(
+            title: headline(volume: volume, muted: false),
+            body: "\(deviceName) · 已超过提醒阈值 \(threshold)%，可适当调低"
+        )
+    }
+
+    private static func headline(volume: Float?, muted: Bool) -> String {
+        guard let volume else { return "AirPods 已连接" }
+        return muted ? "AirPods 已静音 · \(percent(volume))" : "AirPods 音量 \(percent(volume))"
+    }
+
+    private static func percent(_ volume: Float) -> String {
+        "\(Int((min(max(volume, 0), 1) * 100).rounded()))%"
     }
 }
 

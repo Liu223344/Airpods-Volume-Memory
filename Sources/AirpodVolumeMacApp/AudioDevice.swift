@@ -211,6 +211,61 @@ enum AudioHardware {
         )
     }
 
+    /// True while any process is doing IO on the device.
+    static func isRunningSomewhere(_ deviceID: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere, mScope: globalScope, mElement: mainElement
+        )
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(AudioObjectID(deviceID), &address, 0, nil, &size, &running) == noErr
+            && running != 0
+    }
+
+    static func makeRunningListener(
+        for deviceID: AudioDeviceID,
+        handler: @escaping () -> Void
+    ) throws -> AudioPropertyListener {
+        try AudioPropertyListener(
+            objectID: AudioObjectID(deviceID),
+            addresses: [AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere, mScope: globalScope, mElement: mainElement
+            )],
+            handler: handler
+        )
+    }
+
+    /// Whether some app still reports output on the device, or nil where macOS
+    /// (before 14.2) has no per-process audio objects.
+    static func anyProcessOutputting(on deviceID: AudioDeviceID) -> Bool? {
+        guard #available(macOS 14.2, *) else { return nil }
+        let processes = objectList(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyProcessObjectList, globalScope)
+        return processes.contains { process in
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioProcessPropertyIsRunningOutput, mScope: globalScope, mElement: mainElement
+            )
+            var running: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &running) == noErr, running != 0 else {
+                return false
+            }
+            return objectList(process, kAudioProcessPropertyDevices, outputScope).contains(AudioObjectID(deviceID))
+        }
+    }
+
+    private static func objectList(
+        _ objectID: AudioObjectID,
+        _ selector: AudioObjectPropertySelector,
+        _ scope: AudioObjectPropertyScope
+    ) -> [AudioObjectID] {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: mainElement)
+        var size: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(objectID, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var list = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &list) == noErr else { return [] }
+        return list
+    }
+
     private static func device(for deviceID: AudioDeviceID) throws -> AudioDevice {
         let name = try stringProperty(
             kAudioDevicePropertyDeviceNameCFString,

@@ -5,6 +5,7 @@ final class DeviceManagerViewModel: ObservableObject {
     @Published private(set) var snapshot: VolumeMemoryDataSnapshot
     @Published private(set) var restoresPaused = false
     @Published private(set) var pauseSummary: String?
+    @Published private(set) var accessibilityTrusted = AccessibilityAccess.isTrusted
     @Published var automaticRestoreEnabled: Bool
 
     let preferences: AppPreferences
@@ -27,6 +28,7 @@ final class DeviceManagerViewModel: ObservableObject {
         restoresPaused = controller.restoresPaused
         pauseSummary = controller.pauseDescription
         automaticRestoreEnabled = controller.automaticRestoreEnabled
+        accessibilityTrusted = AccessibilityAccess.isTrusted
     }
 
     func setRememberedVolume(_ volume: Double, for deviceUID: String) {
@@ -354,6 +356,24 @@ private struct PreferencesView: View {
                 }
             }
 
+            Section("耳机切换") {
+                Toggle("iPhone-Mac 切换修复", isOn: $preferences.fixSilentSwitchEnabled)
+                if preferences.fixSilentSwitchEnabled && !viewModel.accessibilityTrusted {
+                    HStack {
+                        Label("需要辅助功能权限", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Spacer()
+                        Button("打开系统设置") {
+                            AccessibilityAccess.request()
+                            AccessibilityAccess.openSettings()
+                        }
+                    }
+                }
+                Text("默认关闭。耳机连着 iPhone 时在 Mac 上点播放，部分播放器（如“音乐”）可能切过来后没声音。开启后，应用会在耳机切换的瞬间自动按一次暂停再播放，开头会晚约半秒出声。没有遇到这个问题就不需要开启。开启后需要在“系统设置 > 隐私与安全性 > 辅助功能”中允许本应用。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("外观") {
                 Picker("菜单栏显示", selection: $preferences.menuBarDisplayMode) {
                     ForEach(MenuBarDisplayMode.allCases) { mode in
@@ -395,6 +415,9 @@ private struct PreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            viewModel.refreshRuntimeState()
+        }
     }
 }
 
