@@ -89,11 +89,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
             guard let self else { return }
             // The connection notification already reports this result.
             if event.isConnectionRestore && self.preferences.connectionNotificationEnabled { return }
-            self.notificationManager.deliver(event, mode: self.preferences.restoreNotificationMode)
+            let mode = self.preferences.restoreNotificationMode
+            let threshold = event.succeeded && mode == .allResults
+                ? self.restoreWarningThreshold(volume: event.volume, muted: self.outputIsMuted) : nil
+            self.notificationManager.deliver(event, mode: mode, warningThreshold: threshold)
         }
         controller.onConnectionNotification = { [weak self] event in
             guard let self, self.preferences.connectionNotificationEnabled else { return }
-            self.notificationManager.deliverConnection(event, muted: self.outputIsMuted)
+            let muted = self.outputIsMuted
+            let threshold = event.outcome == .restored
+                ? self.restoreWarningThreshold(volume: event.volume, muted: muted) : nil
+            self.notificationManager.deliverConnection(event, muted: muted, warningThreshold: threshold)
         }
         preferences.onMenuBarDisplayModeChanged = { [weak self] in
             guard let self, let status = self.lastStatus else { return }
@@ -250,6 +256,17 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
         volumeSlider.isEnabled = status.canAdjustVolume
         deviceManagerViewModel.refreshRuntimeState()
+    }
+
+    private func restoreWarningThreshold(volume: Float?, muted: Bool) -> Double? {
+        let threshold = preferences.highVolumeThreshold
+        guard preferences.highVolumeWarningEnabled, !muted, let volume,
+              NotificationText.exceedsWarningThreshold(volume, threshold: threshold) else { return nil }
+        // This result banner already includes the warning for this crossing.
+        _ = highVolumeWarningGate.shouldWarn(
+            deviceUID: controller.currentAirPodsUID, volume: volume, enabled: true, threshold: threshold
+        )
+        return threshold
     }
 
     private func checkHighVolume(_ status: VolumeMemoryStatus) {

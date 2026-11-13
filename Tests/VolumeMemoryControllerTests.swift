@@ -608,6 +608,14 @@ enum VolumeMemoryControllerTestRunner {
                 == NotificationText(title: "恢复到 40%", body: "✅✅✅✅✅✅✅✅"),
             "restored connection text"
         )
+        let warningMarks = "✅✅✅✅⚠️⚠️⚠️⚠️"
+        try expect(NotificationText.connection(event(0.4, .restored), muted: false, warningThreshold: 35).body == warningMarks,
+                   "restored connection above threshold uses mixed marks")
+        try expect(NotificationText.connection(event(0.4, .restored), muted: false, warningThreshold: 40).body == "✅✅✅✅✅✅✅✅",
+                   "equal to threshold is not above threshold")
+        let manual = RestoreNotificationEvent(deviceName: "Pods", volume: 0.4, succeeded: true, isConnectionRestore: false)
+        try expect(NotificationText.restore(manual, warningThreshold: 35).body == warningMarks,
+                   "manual restore above threshold uses mixed marks")
         try expect(
             NotificationText.connection(event(0.62, .failed), muted: false).body == "❌❌❌❌❌❌❌❌",
             "failed connection body uses the failure mark"

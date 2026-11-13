@@ -128,8 +128,8 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func deliverConnection(_ event: ConnectionNotificationEvent, muted: Bool) {
-        let text = NotificationText.connection(event, muted: muted)
+    func deliverConnection(_ event: ConnectionNotificationEvent, muted: Bool, warningThreshold: Double? = nil) {
+        let text = NotificationText.connection(event, muted: muted, warningThreshold: warningThreshold)
         // One banner per device: a quick reconnect replaces the previous one.
         add(identifier: "airpods-connected-\(event.deviceUID)", text: text,
             sound: event.outcome == .failed)
@@ -149,11 +149,11 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         requestAuthorization()
     }
 
-    func deliver(_ event: RestoreNotificationEvent, mode: RestoreNotificationMode) {
+    func deliver(_ event: RestoreNotificationEvent, mode: RestoreNotificationMode, warningThreshold: Double? = nil) {
         guard mode == .allResults || (mode == .failuresOnly && !event.succeeded) else {
             return
         }
-        add(identifier: "airpods-volume-restore-\(UUID().uuidString)", text: NotificationText.restore(event),
+        add(identifier: "airpods-volume-restore-\(UUID().uuidString)", text: NotificationText.restore(event, warningThreshold: warningThreshold),
             sound: !event.succeeded)
     }
 
@@ -185,7 +185,7 @@ struct NotificationText: Equatable {
     private static let successMarks = String(repeating: "✅", count: 8)
     private static let failureMarks = String(repeating: "❌", count: 8)
 
-    static func connection(_ event: ConnectionNotificationEvent, muted: Bool) -> NotificationText {
+    static func connection(_ event: ConnectionNotificationEvent, muted: Bool, warningThreshold: Double? = nil) -> NotificationText {
         let title: String
         if let volume = event.volume, event.outcome == .restored {
             title = "恢复到 \(percent(volume))" + (muted ? " · 静音" : "")
@@ -196,18 +196,18 @@ struct NotificationText: Equatable {
         }
         let body: String
         switch event.outcome {
-        case .restored: body = successMarks
+        case .restored: body = successBody(volume: event.volume, warningThreshold: muted ? nil : warningThreshold)
         case .failed: body = failureMarks
         default: body = event.deviceName
         }
         return NotificationText(title: title, body: body)
     }
 
-    static func restore(_ event: RestoreNotificationEvent) -> NotificationText {
+    static func restore(_ event: RestoreNotificationEvent, warningThreshold: Double? = nil) -> NotificationText {
         let title = event.succeeded
             ? (event.volume.map { "恢复到 \(percent($0))" } ?? "音量已恢复")
             : (event.volume.map { "恢复失败 · 当前 \(percent($0))" } ?? "恢复失败")
-        return NotificationText(title: title, body: event.succeeded ? successMarks : failureMarks)
+        return NotificationText(title: title, body: event.succeeded ? successBody(volume: event.volume, warningThreshold: warningThreshold) : failureMarks)
     }
 
     static func highVolume(deviceName: String, volume: Float, threshold: Int) -> NotificationText {
@@ -215,6 +215,16 @@ struct NotificationText: Equatable {
             title: "音量过高 · \(percent(volume))",
             body: "\(deviceName) · 已超过提醒阈值 \(threshold)%，可适当调低"
         )
+    }
+
+    private static func successBody(volume: Float?, warningThreshold: Double?) -> String {
+        guard let volume, let warningThreshold,
+              exceedsWarningThreshold(volume, threshold: warningThreshold) else { return successMarks }
+        return "✅✅✅✅⚠️⚠️⚠️⚠️"
+    }
+
+    static func exceedsWarningThreshold(_ volume: Float, threshold: Double) -> Bool {
+        volume.isFinite && Double(volume) * 100 > threshold + 0.0001
     }
 
     private static func headline(volume: Float?, muted: Bool) -> String {
@@ -236,7 +246,7 @@ struct HighVolumeWarningGate {
             warnedDevice = nil
             return false
         }
-        guard Double(volume) * 100 > threshold + 0.0001 else {
+        guard NotificationText.exceedsWarningThreshold(volume, threshold: threshold) else {
             warnedDevice = nil
             return false
         }
