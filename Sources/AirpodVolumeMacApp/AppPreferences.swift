@@ -131,14 +131,14 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
         let text = NotificationText.connection(event, muted: muted)
         // One banner per device: a quick reconnect replaces the previous one.
         add(identifier: "airpods-connected-\(event.deviceUID)", text: text,
-            volume: event.volume, muted: muted, sound: event.outcome == .failed)
+            sound: event.outcome == .failed)
     }
 
     func deliverHighVolumeWarning(deviceName: String, volume: Float, threshold: Int) {
         // Silent banner: the warning itself should not add a loud sound.
         add(identifier: "airpods-high-volume-warning",
             text: NotificationText.highVolume(deviceName: deviceName, volume: volume, threshold: threshold),
-            volume: volume, muted: false, sound: false)
+            sound: false)
     }
 
     func modeChanged(_ mode: RestoreNotificationMode) {
@@ -153,32 +153,17 @@ final class RestoreNotificationManager: NSObject, UNUserNotificationCenterDelega
             return
         }
         add(identifier: "airpods-volume-restore-\(UUID().uuidString)", text: NotificationText.restore(event),
-            volume: event.volume, muted: false, sound: !event.succeeded)
+            sound: !event.succeeded)
     }
 
-    private func add(identifier: String, text: NotificationText, volume: Float?, muted: Bool, sound: Bool) {
+    private func add(identifier: String, text: NotificationText, sound: Bool) {
         let content = UNMutableNotificationContent()
         content.title = text.title
         content.body = text.body
         content.sound = sound ? .default : nil
-        if let attachment = gaugeAttachment(volume: volume, muted: muted) {
-            content.attachments = [attachment]
-        }
         UNUserNotificationCenter.current().add(UNNotificationRequest(
             identifier: identifier, content: content, trigger: nil
         ))
-    }
-
-    /// The volume ring shown on the right of the banner. The system moves the file
-    /// into its own store, so each notification gets a fresh temporary copy.
-    private func gaugeAttachment(volume: Float?, muted: Bool) -> UNNotificationAttachment? {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("airpods-volume-\(UUID().uuidString).png")
-        guard let image = VolumeGauge.image(size: 256, style: VolumeGauge.notificationStyle(volume: volume, muted: muted)),
-              VolumeGauge.writePNG(image, to: url) else {
-            return nil
-        }
-        return try? UNNotificationAttachment(identifier: "gauge", url: url)
     }
 
     func userNotificationCenter(
@@ -206,9 +191,18 @@ struct NotificationText: Equatable {
         case .paused: status = "自动恢复已暂停"
         case .automaticRestoreOff: status = "未自动恢复"
         case .noRememberedVolume: status = "已记为初始音量"
-        case .pending, .interrupted: status = "已连接"
+        case .pending: status = "已连接，正在确认音量"
+        case .interrupted: status = "已连接"
         }
-        return NotificationText(title: headline(volume: event.volume, muted: muted), body: "\(event.deviceName) · \(status)")
+        let title: String
+        if let volume = event.volume, event.outcome == .restored || event.outcome == .pending {
+            title = "恢复到 \(percent(volume))" + (muted ? " · 静音" : "")
+        } else if event.outcome == .failed {
+            title = event.volume.map { "恢复失败 · 当前 \(percent($0))" } ?? "恢复失败"
+        } else {
+            title = headline(volume: event.volume, muted: muted)
+        }
+        return NotificationText(title: title, body: "\(event.deviceName) · \(status)")
     }
 
     static func restore(_ event: RestoreNotificationEvent) -> NotificationText {
@@ -218,12 +212,15 @@ struct NotificationText: Equatable {
         } else {
             status = event.volume == nil ? "无法验证音量，可在菜单中重试" : "恢复未生效，可在菜单中重试"
         }
-        return NotificationText(title: headline(volume: event.volume, muted: false), body: "\(event.deviceName) · \(status)")
+        let title = event.succeeded
+            ? (event.volume.map { "恢复到 \(percent($0))" } ?? "音量已恢复")
+            : (event.volume.map { "恢复失败 · 当前 \(percent($0))" } ?? "恢复失败")
+        return NotificationText(title: title, body: "\(event.deviceName) · \(status)")
     }
 
     static func highVolume(deviceName: String, volume: Float, threshold: Int) -> NotificationText {
         NotificationText(
-            title: headline(volume: volume, muted: false),
+            title: "音量过高 · \(percent(volume))",
             body: "\(deviceName) · 已超过提醒阈值 \(threshold)%，可适当调低"
         )
     }

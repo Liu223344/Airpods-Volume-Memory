@@ -24,7 +24,8 @@ enum VolumeMemoryControllerTestRunner {
             ("interrupted restores leave no pending history", testInterruptedRestoresLeaveNoPendingHistory),
             ("manual restore keeps the connection outcome", testManualRestoreKeepsConnectionOutcome),
             ("status reports settling until the volume is final", testStatusReportsSettling),
-            ("one connection notification per connection", testConnectionNotification),
+            ("connection notification is sent before final verification", testConnectionNotification),
+            ("early connection notification is corrected on final failure", testConnectionNotificationCorrection),
             ("notification text leads with the volume", testNotificationText),
             ("takeover blip nudges the player once", testPlaybackStallDetector),
             ("menu status is plain language", testMenuStatusText)
@@ -514,9 +515,11 @@ enum VolumeMemoryControllerTestRunner {
             try expect(connections.isEmpty, "notified before the volume settled")
             hardware.notifyDefaultOutputChanged() // Duplicate CoreAudio notification.
             controller.refresh()
+            scheduler.advance(to: 1)
+            try expect(connections.count == 1 && restores.isEmpty, "initial readback should notify before final verification")
+            try expect(connections[0].outcome == .pending, "early notification must not claim final success")
             scheduler.advance(to: 10)
             try expect(connections.count == 1, "expected exactly one notification, got \(connections.count)")
-            try expect(connections[0].outcome == .restored, "connection notification lacks the restore result")
             try expect(connections[0].volume == 0.25, "connection notification has the wrong volume")
             try expect(restores.count == 1 && restores[0].isConnectionRestore, "restore was not flagged as the connection restore")
 
@@ -534,14 +537,35 @@ enum VolumeMemoryControllerTestRunner {
             hardware.device = second
             hardware.volume = 0.4
             hardware.notifyDefaultOutputChanged()
-            scheduler.advance(to: 30)
-            try expect(connections.count == 2, "a new connection was not notified")
+            try expect(connections.count == 2, "a new connection without a saved level should notify immediately")
             try expect(connections[1].outcome == .noRememberedVolume && connections[1].volume == 0.4, "new device notification is wrong")
 
             let preferences = AppPreferences(defaults: defaults)
             try expect(preferences.connectionNotificationEnabled, "connection notifications should default to on")
             preferences.connectionNotificationEnabled = false
             try expect(!AppPreferences(defaults: defaults).connectionNotificationEnabled, "connection notification preference was not persisted")
+        }
+    }
+
+    private static func testConnectionNotificationCorrection() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = VolumeMemoryController(defaults: defaults, audioHardware: hardware, scheduler: scheduler)
+            var connections: [ConnectionNotificationEvent] = []
+            controller.onConnectionNotification = { connections.append($0) }
+            controller.start()
+            scheduler.advance(to: 0.2)
+            try expect(connections.count == 1 && connections[0].volume == 0.25,
+                       "production configuration should notify after the first readback")
+            hardware.volume = 0.5
+            hardware.ignoresVolumeWrites = true
+            scheduler.advance(to: 30)
+            try expect(connections.map(\.outcome) == [.pending, .failed],
+                       "final failure must correct the preliminary reading once")
+            try expect(connections.last?.volume == 0.5, "correction should show actual volume")
         }
     }
 
@@ -552,7 +576,7 @@ enum VolumeMemoryControllerTestRunner {
         }
         try expect(
             NotificationText.connection(event(0.4, .restored), muted: false)
-                == NotificationText(title: "AirPods 音量 40%", body: "Pods · 已恢复记忆音量"),
+                == NotificationText(title: "恢复到 40%", body: "Pods · 已恢复记忆音量"),
             "restored connection text"
         )
         try expect(
@@ -565,11 +589,13 @@ enum VolumeMemoryControllerTestRunner {
         )
         try expect(NotificationText.connection(event(nil, .pending), muted: false).title == "AirPods 已连接", "unknown volume title")
         try expect(
-            NotificationText.highVolume(deviceName: "Pods", volume: 0.8, threshold: 60).title == "AirPods 音量 80%",
+            NotificationText.highVolume(deviceName: "Pods", volume: 0.8, threshold: 60).title == "音量过高 · 80%",
             "high-volume title"
         )
-        try expect(VolumeGauge.image(size: 64, style: VolumeGauge.notificationStyle(volume: 1, muted: false)) != nil,
-                   "gauge image renders")
+        try expect(NotificationText.connection(event(0.4, .pending), muted: false).title == "恢复到 40%",
+                   "early readback leads with restored percentage")
+        try expect(NotificationText.connection(event(0.62, .failed), muted: false).title == "恢复失败 · 当前 62%",
+                   "correction headline shows current volume")
     }
 
     private static func testPlaybackStallDetector() throws {

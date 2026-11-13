@@ -62,6 +62,12 @@ final class StatusBarController: NSObject, NSMenuDelegate {
     private var wakeObserver: NSObjectProtocol?
     private var highVolumeWarningGate = HighVolumeWarningGate()
     private var lastStatus: VolumeMemoryStatus?
+    private var lastMuted = false
+    private lazy var menuBarIcon: NSImage? = {
+        let image = NSImage(systemSymbolName: "airpodspro", accessibilityDescription: "AirPods 音量")
+        image?.isTemplate = true
+        return image
+    }()
 
     override init() {
         super.init()
@@ -224,10 +230,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         isRenderingStatus = true
         defer { isRenderingStatus = false }
         lastStatus = status
+        let muted = status.canAdjustVolume && outputIsMuted
+        lastMuted = muted
 
         checkHighVolume(status)
         renderMenuBar(status)
-        let muted = outputIsMuted
         let lines = MenuStatusText.lines(for: status, muted: muted)
         titleLabel.stringValue = lines.title
         detailLabel.stringValue = lines.detail
@@ -249,11 +256,11 @@ final class StatusBarController: NSObject, NSMenuDelegate {
         // Reconnect volume is often briefly high before the restore lands. Leave the
         // gate untouched; the settled status that follows is checked normally.
         guard !status.isSettling else { return }
-        let uid = status.canAdjustVolume ? controller.dataSnapshot().currentDeviceUID : nil
+        let uid = status.canAdjustVolume ? controller.currentAirPodsUID : nil
         if highVolumeWarningGate.shouldWarn(
             deviceUID: uid,
             volume: status.currentVolume,
-            enabled: preferences.highVolumeWarningEnabled && !outputIsMuted,
+            enabled: preferences.highVolumeWarningEnabled && !lastMuted,
             threshold: preferences.highVolumeThreshold
         ), let volume = status.currentVolume {
             notificationManager.deliverHighVolumeWarning(
@@ -266,10 +273,9 @@ final class StatusBarController: NSObject, NSMenuDelegate {
 
     private func renderMenuBar(_ status: VolumeMemoryStatus) {
         guard let button = statusItem.button else { return }
-        let muted = outputIsMuted
+        let muted = lastMuted
         let percent = status.currentVolume.map { Int((min(max($0, 0), 1) * 100).rounded()) }
-        let icon = NSImage(systemSymbolName: "airpodspro", accessibilityDescription: "AirPods 音量")
-        icon?.isTemplate = true
+        let icon = menuBarIcon
 
         switch preferences.menuBarDisplayMode {
         case .iconOnly:
