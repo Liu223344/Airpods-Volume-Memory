@@ -78,6 +78,7 @@ struct VolumeMemoryConfiguration {
     var restoreAttemptDelays: [TimeInterval] = [0.2, 2.25, 5.0]
     var restoreCompletionGrace: TimeInterval = 1.0
     var saveDebounceDelay: TimeInterval = 0.2
+    var earlyVerificationDelay: TimeInterval? = 2
 }
 
 protocol VolumeMemoryScheduledTask: AnyObject {
@@ -661,7 +662,8 @@ final class VolumeMemoryController {
         for (index, delay) in delays.enumerated() {
             pendingRestoreTasks.append(
                 scheduler.schedule(after: max(0, delay)) { [weak self] in
-                    self?.performRestoreAttempt(index: index, totalAttempts: delays.count, for: device)
+                    self?.performRestoreAttempt(index: index, totalAttempts: delays.count, for: device,
+                                                allowEarlyVerification: index == 0)
                 }
             )
         }
@@ -685,7 +687,9 @@ final class VolumeMemoryController {
         )
     }
 
-    private func performRestoreAttempt(index: Int, totalAttempts: Int, for device: AudioDevice) {
+    private func performRestoreAttempt(
+        index: Int, totalAttempts: Int, for device: AudioDevice, allowEarlyVerification: Bool = false
+    ) {
         guard isCurrentEndpoint(device), let target = restoreTarget else {
             return
         }
@@ -697,6 +701,12 @@ final class VolumeMemoryController {
         do {
             try audioHardware.setOutputVolume(target, for: device)
             let observed = try? normalizedVolume(audioHardware.outputVolume(for: device))
+            if allowEarlyVerification, let delay = configuration.earlyVerificationDelay,
+               let observed, volumesMatch(observed, target) {
+                pendingRestoreTasks.append(scheduler.schedule(after: delay) { [weak self] in
+                    self?.finishRestore(for: device, onlyIfVerified: true)
+                })
+            }
             publish(
                 primary: "正在恢复：\(device.name) 至 \(percent(target)).",
                 secondary: "验证次数：\(index + 1) / \(totalAttempts).",
@@ -716,7 +726,7 @@ final class VolumeMemoryController {
         }
     }
 
-    private func finishRestore(for device: AudioDevice) {
+    private func finishRestore(for device: AudioDevice, onlyIfVerified: Bool = false) {
         guard isCurrentEndpoint(device), let target = restoreTarget else {
             return
         }
@@ -734,7 +744,9 @@ final class VolumeMemoryController {
         // A late Bluetooth reset or temporary read error merits a bounded retry.
         // Keep the same restore transaction, memory protection and notification.
         let volume = try? observed.get()
-        if !(volume.map { volumesMatch($0, target) } ?? false), recoveryAttemptsRemaining > 0 {
+        let verified = volume.map { volumesMatch($0, target) } ?? false
+        if onlyIfVerified && !verified { return }
+        if !verified, recoveryAttemptsRemaining > 0 {
             recoveryAttemptsRemaining -= 1
             let attempt = 2 - recoveryAttemptsRemaining
             pendingRestoreTasks.append(scheduler.schedule(after: TimeInterval(attempt)) { [weak self] in
@@ -758,7 +770,13 @@ final class VolumeMemoryController {
         isRestoreInProgress = false
         isManualRestore = false
         restoreTarget = nil
+        pendingRestoreTasks.forEach { $0.cancel() }
         pendingRestoreTasks.removeAll()
+        if onlyIfVerified {
+            pendingSettlingTask?.cancel()
+            pendingSettlingTask = nil
+            isConnectionSettling = false
+        }
 
         func mark(_ outcome: RestoreHistoryOutcome, _ restoredVolume: Float?) {
             if !wasManual {

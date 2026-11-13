@@ -24,6 +24,7 @@ enum VolumeMemoryControllerTestRunner {
             ("interrupted restores leave no pending history", testInterruptedRestoresLeaveNoPendingHistory),
             ("manual restore keeps the connection outcome", testManualRestoreKeepsConnectionOutcome),
             ("status reports settling until the volume is final", testStatusReportsSettling),
+            ("stable restore finishes early and cancels remaining writes", testEarlyStableRestore),
             ("connection notification waits for final verification", testConnectionNotification),
             ("connection notification reports only final failure", testConnectionNotificationCorrection),
             ("notification text leads with the volume", testNotificationText),
@@ -547,6 +548,33 @@ enum VolumeMemoryControllerTestRunner {
         }
     }
 
+    private static func testEarlyStableRestore() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = VolumeMemoryController(defaults: defaults, audioHardware: hardware, scheduler: scheduler)
+            var connections: [ConnectionNotificationEvent] = []
+            var status: VolumeMemoryStatus?
+            controller.onConnectionNotification = { connections.append($0) }
+            controller.onStatusChanged = { status = $0 }
+            controller.start()
+            scheduler.advance(to: 2.19)
+            try expect(connections.isEmpty, "must wait for a second read")
+            scheduler.advance(to: 2.2)
+            try expect(connections.map(\.outcome) == [.restored], "stable restore should finish at 2.2 seconds")
+            try expect(status?.isSettling == false, "early completion should settle the status")
+            hardware.volume = 0.32
+            hardware.notifyVolumeChanged()
+            scheduler.advance(to: 10)
+            try expect(hardware.setVolumes == [0.25], "early completion must cancel later writes")
+            try expect(connections.count == 1, "only one final notification")
+            try expect(abs(defaults.double(forKey: "savedOutputVolume.\(device.uid)") - 0.32) < 0.001,
+                       "later volume changes should be remembered")
+        }
+    }
+
     private static func testConnectionNotificationCorrection() throws {
         try withDefaults { defaults in
             let device = makeAirPods()
@@ -672,7 +700,8 @@ enum VolumeMemoryControllerTestRunner {
             configuration: VolumeMemoryConfiguration(
                 restoreAttemptDelays: [1, 2, 4],
                 restoreCompletionGrace: 0.5,
-                saveDebounceDelay: 0.2
+                saveDebounceDelay: 0.2,
+                earlyVerificationDelay: nil
             )
         )
     }
