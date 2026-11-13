@@ -605,11 +605,11 @@ enum VolumeMemoryControllerTestRunner {
         }
         try expect(
             NotificationText.connection(event(0.4, .restored), muted: false)
-                == NotificationText(title: "恢复到 40%", body: "✅"),
+                == NotificationText(title: "恢复到 40%", body: "✅✅✅✅✅✅✅✅"),
             "restored connection text"
         )
         try expect(
-            NotificationText.connection(event(0.62, .failed), muted: false).body == "❌",
+            NotificationText.connection(event(0.62, .failed), muted: false).body == "❌❌❌❌❌❌❌❌",
             "failed connection body uses the failure mark"
         )
         try expect(
