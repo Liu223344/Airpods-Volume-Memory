@@ -6,6 +6,9 @@ enum VolumeMemoryControllerTestRunner {
     static func main() throws {
         let tests: [(String, () throws -> Void)] = [
             ("high volume threshold crossings", testHighVolumeWarning),
+            ("late Bluetooth reset is recovered", testLateReset),
+            ("recovery stops when the device keeps rejecting writes", testBoundedRecovery),
+            ("stale restore cannot write after output switch", testStaleRestore),
             ("restore retries and verifies", testRestoreUsesMultipleAttemptsAndVerifiesTheResult),
             ("reconnect noise preserves memory", testReconnectNoiseDoesNotOverwriteRememberedVolume),
             ("slider cancels pending restore", testSliderChangeCancelsPendingReconnectRestore),
@@ -63,6 +66,62 @@ enum VolumeMemoryControllerTestRunner {
             prefs.highVolumeWarningEnabled = false
             let restored = AppPreferences(defaults: defaults)
             try expect(!restored.highVolumeWarningEnabled && restored.highVolumeThreshold == 35, "warning preferences must persist")
+        }
+    }
+
+    private static func testLateReset() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            let key = "savedOutputVolume.\(device.uid)"
+            defaults.set(0.21, forKey: key)
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            var results: [Bool] = []
+            controller.onRestoreNotification = { results.append($0.succeeded) }
+            controller.start()
+            scheduler.advance(to: 4.4)
+            hardware.volume = 0.5 // System changes volume after the last scheduled write.
+            hardware.notifyVolumeChanged()
+            scheduler.advance(to: 4.7)
+            try expect(defaults.double(forKey: key) < 0.22, "late system reset replaced the remembered level")
+            try expect(results.isEmpty, "failure was announced before a recovery attempt")
+            scheduler.advance(to: 10)
+            try expect(hardware.volume == 0.21, "late reset was not corrected")
+            try expect(results == [true], "restore must report one verified result")
+        }
+    }
+
+    private static func testBoundedRecovery() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            let key = "savedOutputVolume.\(device.uid)"
+            defaults.set(0.21, forKey: key)
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            hardware.ignoresVolumeWrites = true
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            var results: [Bool] = []
+            controller.onRestoreNotification = { results.append($0.succeeded) }
+            controller.start()
+            scheduler.advance(to: 30)
+            try expect(hardware.setVolumes.count == 5, "permanent failure did not stop after bounded retries")
+            try expect(results == [false], "permanent failure must report only one final result")
+            try expect(defaults.double(forKey: key) == 0.21, "permanent failure changed the remembered level")
+        }
+    }
+
+    private static func testStaleRestore() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            defaults.set(0.21, forKey: "savedOutputVolume.\(device.uid)")
+            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = makeController(defaults: defaults, hardware: hardware, scheduler: scheduler)
+            controller.start()
+            hardware.device = nil // The system route changed but its callback is still queued.
+            scheduler.advance(to: 10)
+            try expect(hardware.setVolumes.isEmpty, "restore wrote to a device that was no longer the output")
         }
     }
 
@@ -636,6 +695,7 @@ private final class FakeAudioHardware: AudioHardwareControlling {
     var device: AudioDevice?
     var volume: Float
     var setVolumes: [Float] = []
+    var ignoresVolumeWrites = false
     private var defaultOutputHandler: (() -> Void)?
     private var volumeHandler: (() -> Void)?
 
@@ -649,7 +709,7 @@ private final class FakeAudioHardware: AudioHardwareControlling {
 
     func setOutputVolume(_ volume: Float, for device: AudioDevice) throws {
         setVolumes.append(volume)
-        self.volume = volume
+        if !ignoresVolumeWrites { self.volume = volume }
     }
 
     func makeDefaultOutputDeviceListener(handler: @escaping () -> Void) throws -> AudioPropertyListening {

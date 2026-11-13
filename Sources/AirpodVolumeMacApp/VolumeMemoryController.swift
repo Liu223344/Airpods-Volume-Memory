@@ -119,12 +119,14 @@ final class VolumeMemoryController {
 
     private var defaultOutputListener: AudioPropertyListening?
     private var volumeListener: AudioPropertyListening?
+    private var volumeListenerGeneration = UUID()
     private var currentDevice: AudioDevice?
     private var pendingRestoreTasks: [VolumeMemoryScheduledTask] = []
     private var pendingSaveTask: VolumeMemoryScheduledTask?
     private var pendingSettlingTask: VolumeMemoryScheduledTask?
     private var pendingPauseExpirationTask: VolumeMemoryScheduledTask?
     private var restoreTarget: Float?
+    private var recoveryAttemptsRemaining = 0
     private var isRestoreInProgress = false
     private var isManualRestore = false
     private var isConnectionSettling = false
@@ -585,8 +587,12 @@ final class VolumeMemoryController {
             return
         }
 
+        let generation = UUID()
+        volumeListenerGeneration = generation
         volumeListener = try? audioHardware.makeVolumeListener(for: device.id) { [weak self] in
-            self?.volumeChanged()
+            guard let self, self.volumeListenerGeneration == generation,
+                  self.isCurrentEndpoint(device) else { return }
+            self.volumeChanged()
         }
     }
 
@@ -642,6 +648,7 @@ final class VolumeMemoryController {
     private func beginRestore(_ volume: Float, for device: AudioDevice, manuallyRequested: Bool) {
         cancelRestore()
         restoreTarget = normalizedVolume(volume)
+        recoveryAttemptsRemaining = 2
         isRestoreInProgress = true
         isManualRestore = manuallyRequested
         // A manual retry must not rewrite how this connection was originally handled.
@@ -682,6 +689,8 @@ final class VolumeMemoryController {
             return
         }
 
+        // CoreAudio may already have switched routes while its listener callback is queued.
+        guard let active = try? audioHardware.defaultOutputDevice(), sameEndpoint(active, device) else { return }
         installVolumeListener(for: device)
 
         do {
@@ -690,7 +699,7 @@ final class VolumeMemoryController {
             publish(
                 primary: "正在恢复：\(device.name) 至 \(percent(target)).",
                 secondary: "验证次数：\(index + 1) / \(totalAttempts).",
-                currentVolume: observed ?? target,
+                currentVolume: observed,
                 canAdjustVolume: true,
                 hasRememberedVolume: true
             )
@@ -711,6 +720,38 @@ final class VolumeMemoryController {
             return
         }
 
+        let observed: Result<Float, Error> = Result {
+            let active = try audioHardware.defaultOutputDevice()
+            guard sameEndpoint(active, device) else { throw RestoreRouteError.outputChanged }
+            return normalizedVolume(try audioHardware.outputVolume(for: device))
+        }
+        if case .failure(RestoreRouteError.outputChanged) = observed {
+            reconcileDefaultOutputDevice(force: false)
+            return
+        }
+
+        // A late Bluetooth reset or temporary read error merits a bounded retry.
+        // Keep the same restore transaction, memory protection and notification.
+        let volume = try? observed.get()
+        if !(volume.map { volumesMatch($0, target) } ?? false), recoveryAttemptsRemaining > 0 {
+            recoveryAttemptsRemaining -= 1
+            let attempt = 2 - recoveryAttemptsRemaining
+            pendingRestoreTasks.append(scheduler.schedule(after: TimeInterval(attempt)) { [weak self] in
+                self?.performRestoreAttempt(index: attempt - 1, totalAttempts: 2, for: device)
+            })
+            pendingRestoreTasks.append(scheduler.schedule(after: TimeInterval(attempt) + max(0.5, configuration.restoreCompletionGrace)) { [weak self] in
+                self?.finishRestore(for: device)
+            })
+            publish(
+                primary: "正在重试恢复音量…",
+                secondary: "耳机音量尚未稳定，正在重新应用记忆值。",
+                currentVolume: volume,
+                canAdjustVolume: true,
+                hasRememberedVolume: true
+            )
+            return
+        }
+
         let wasManual = isManualRestore
         let isConnectionRestore = !wasManual && connectionNotificationPending
         isRestoreInProgress = false
@@ -726,7 +767,7 @@ final class VolumeMemoryController {
         }
 
         do {
-            let currentVolume = normalizedVolume(try audioHardware.outputVolume(for: device))
+            let currentVolume = try observed.get()
             if volumesMatch(currentVolume, target) {
                 recordSuccessfulRestore(for: device, volume: currentVolume)
                 mark(.restored, currentVolume)
@@ -776,6 +817,8 @@ final class VolumeMemoryController {
         }
     }
 
+    private enum RestoreRouteError: Error { case outputChanged }
+
     private var isAutomaticRestoreInProgress: Bool {
         isRestoreInProgress && !isManualRestore
     }
@@ -812,14 +855,16 @@ final class VolumeMemoryController {
 
     private func volumeChanged() {
         pendingSaveTask?.cancel()
+        let maySave = !isRestoreInProgress && !isConnectionSettling
         pendingSaveTask = scheduler.schedule(after: configuration.saveDebounceDelay) { [weak self] in
-            self?.saveChangedVolumeIfNeeded()
+            self?.saveChangedVolumeIfNeeded(maySave: maySave)
         }
     }
 
-    private func saveChangedVolumeIfNeeded() {
+    private func saveChangedVolumeIfNeeded(maySave: Bool) {
         pendingSaveTask = nil
-        guard let device = currentDevice, device.isAirPods else {
+        guard let device = currentDevice, device.isAirPods,
+              let active = try? audioHardware.defaultOutputDevice(), sameEndpoint(active, device) else {
             return
         }
 
@@ -835,6 +880,8 @@ final class VolumeMemoryController {
                 )
                 return
             }
+            // A debounced reconnect event can arrive here after restoration finished.
+            guard maySave else { return }
 
             if let saved = savedVolume(for: device), volumesMatch(saved, volume) {
                 publishTrackingStatus(for: device, currentVolume: volume, note: "音量已同步。")
