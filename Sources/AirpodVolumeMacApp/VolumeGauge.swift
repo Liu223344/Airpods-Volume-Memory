@@ -176,3 +176,67 @@ enum VolumeGauge {
         CGColor(srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
     }
 }
+
+/// A simple silhouette that stays readable at notification thumbnail size.
+enum RestoreResultIcon {
+    case success
+    case failure
+
+    private static let successImage = RestoreResultIcon.success.render()
+    private static let failureImage = RestoreResultIcon.failure.render()
+
+    var image: CGImage? {
+        self == .success ? Self.successImage : Self.failureImage
+    }
+
+    private func render() -> CGImage? {
+        let side = 128
+        guard let context = CGContext(
+            data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        context.setFillColor(self == .success
+            ? CGColor(srgbRed: 0.02, green: 0.59, blue: 0.30, alpha: 1)
+            : CGColor(srgbRed: 0.88, green: 0.09, blue: 0.20, alpha: 1))
+        context.addPath(CGPath(roundedRect: CGRect(x: 3, y: 3, width: 122, height: 122),
+                               cornerWidth: 26, cornerHeight: 26, transform: nil))
+        context.fillPath()
+
+        let shell = CGColor(srgbRed: 0.98, green: 0.98, blue: 0.96, alpha: 1)
+        let tip = CGColor(srgbRed: 0.76, green: 0.78, blue: 0.76, alpha: 1)
+        let opening = CGColor(srgbRed: 0.40, green: 0.43, blue: 0.42, alpha: 1)
+        for (x, direction) in [(CGFloat(46), CGFloat(1)), (CGFloat(82), CGFloat(-1))] {
+            context.saveGState()
+            context.translateBy(x: x, y: 77)
+            context.scaleBy(x: direction, y: 1)
+
+            context.setFillColor(shell)
+            context.addPath(CGPath(roundedRect: CGRect(x: -4, y: -41, width: 12, height: 40),
+                                   cornerWidth: 6, cornerHeight: 6, transform: nil))
+            context.fillPath()
+            context.saveGState()
+            context.rotate(by: -.pi / 6)
+            context.fillEllipse(in: CGRect(x: -16, y: -13, width: 34, height: 30))
+            context.restoreGState()
+
+            context.setFillColor(opening)
+            context.addPath(CGPath(roundedRect: CGRect(x: 3, y: 7, width: 10, height: 4),
+                                   cornerWidth: 2, cornerHeight: 2, transform: nil))
+            context.fillPath()
+
+            context.saveGState()
+            context.translateBy(x: -19, y: -4)
+            context.rotate(by: -.pi / 5)
+            context.setFillColor(tip)
+            context.fillEllipse(in: CGRect(x: -9, y: -11, width: 19, height: 22))
+            context.setStrokeColor(opening)
+            context.setLineWidth(2.5)
+            context.strokeEllipse(in: CGRect(x: -5, y: -7, width: 10, height: 14))
+            context.restoreGState()
+            context.restoreGState()
+        }
+        return context.makeImage()
+    }
+}

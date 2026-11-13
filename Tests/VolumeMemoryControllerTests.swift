@@ -605,12 +605,12 @@ enum VolumeMemoryControllerTestRunner {
         }
         try expect(
             NotificationText.connection(event(0.4, .restored), muted: false)
-                == NotificationText(title: "恢复到 40%", body: "Pods · 已恢复记忆音量"),
+                == NotificationText(title: "恢复到 40%", body: "✅"),
             "restored connection text"
         )
         try expect(
-            NotificationText.connection(event(0.62, .failed), muted: false).body == "Pods · 未能恢复到 35%，可在菜单中重试",
-            "failed connection names the remembered volume"
+            NotificationText.connection(event(0.62, .failed), muted: false).body == "❌",
+            "failed connection body uses the failure mark"
         )
         try expect(
             NotificationText.connection(event(0.4, .paused), muted: true).title == "AirPods 已静音 · 40%",
