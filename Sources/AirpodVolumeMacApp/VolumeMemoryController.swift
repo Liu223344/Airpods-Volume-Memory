@@ -69,6 +69,7 @@ struct VolumeMemoryStatus {
     /// Reconnect or restore is still in progress, so the volume may be temporary.
     let isSettling: Bool
     let rememberedVolume: Float?
+    let fixedRestoreEnabled: Bool
     let deviceAutomaticRestoreEnabled: Bool
     /// Something the user should know about, e.g. a restore that did not hold.
     let problem: String?
@@ -167,6 +168,30 @@ final class VolumeMemoryController {
         }
     }
 
+    var fixedRestoreEnabled: Bool { defaults.bool(forKey: "fixedRestoreEnabled") }
+
+    var fixedRestorePercent: Int {
+        guard defaults.object(forKey: "fixedRestorePercent") != nil else { return 15 }
+        return min(max(defaults.integer(forKey: "fixedRestorePercent"), 0), 100)
+    }
+
+    func setFixedRestore(enabled: Bool, percent: Int) {
+        let clamped = min(max(percent, 0), 100)
+        guard enabled != fixedRestoreEnabled || clamped != fixedRestorePercent else { return }
+        defaults.set(enabled, forKey: "fixedRestoreEnabled")
+        defaults.set(clamped, forKey: "fixedRestorePercent")
+        // Settings choose the next restore target. Cancel writes already queued for the old target.
+        if isRestoreInProgress { cancelRestore() }
+        pendingSaveTask?.cancel()
+        pendingSaveTask = nil
+        refresh()
+    }
+
+    private func preferredRestoreVolume(for device: AudioDevice) -> Float? {
+        if fixedRestoreEnabled { return Float(fixedRestorePercent) / 100 }
+        return savedVolume(for: device)
+    }
+
     var automaticRestoreEnabled: Bool {
         guard defaults.object(forKey: automaticRestoreEnabledKey) != nil else {
             return true
@@ -243,7 +268,7 @@ final class VolumeMemoryController {
         }
         if automaticRestoreEnabled,
            deviceAutomaticRestoreEnabled(device.uid),
-           let rememberedVolume = savedVolume(for: device) {
+           let rememberedVolume = preferredRestoreVolume(for: device) {
             beginRestore(rememberedVolume, for: device, manuallyRequested: false)
         } else {
             publishCurrentStatus(for: device, note: "已恢复自动调节。")
@@ -251,7 +276,7 @@ final class VolumeMemoryController {
     }
 
     func updateRememberedVolume(for deviceUID: String, volume: Float) {
-        guard let index = rememberedDevices.firstIndex(where: { $0.uid == deviceUID }) else {
+        guard !fixedRestoreEnabled, let index = rememberedDevices.firstIndex(where: { $0.uid == deviceUID }) else {
             return
         }
         let adjustedVolume = normalizedVolume(volume)
@@ -293,7 +318,7 @@ final class VolumeMemoryController {
                 markCurrentHistory(outcome: .automaticRestoreOff, restoredVolume: nil)
             }
             publishCurrentStatus(for: device, note: "此设备的自动恢复已关闭。")
-        } else if automaticRestoreEnabled, !restoresPaused, let rememberedVolume = savedVolume(for: device) {
+        } else if automaticRestoreEnabled, !restoresPaused, let rememberedVolume = preferredRestoreVolume(for: device) {
             beginRestore(rememberedVolume, for: device, manuallyRequested: false)
         } else {
             publishCurrentStatus(for: device, note: "此设备的自动恢复已开启。")
@@ -388,7 +413,7 @@ final class VolumeMemoryController {
         } else if !deviceAutomaticRestoreEnabled(device.uid) {
             cancelRestore()
             publishCurrentStatus(for: device, note: "此设备的自动恢复已关闭。")
-        } else if let rememberedVolume = savedVolume(for: device) {
+        } else if let rememberedVolume = preferredRestoreVolume(for: device) {
             beginRestore(rememberedVolume, for: device, manuallyRequested: false)
         } else {
             publishCurrentStatus(for: device, note: "自动恢复已开启，请先保存音量。")
@@ -396,6 +421,7 @@ final class VolumeMemoryController {
     }
 
     func saveCurrentVolumeNow() {
+        guard !fixedRestoreEnabled else { return }
         cancelRestore()
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
@@ -424,7 +450,7 @@ final class VolumeMemoryController {
             }
 
             currentDevice = device
-            guard let rememberedVolume = savedVolume(for: device) else {
+            guard let rememberedVolume = preferredRestoreVolume(for: device) else {
                 publishCurrentStatus(for: device, note: "暂无记忆音量，请先保存。")
                 return
             }
@@ -461,8 +487,9 @@ final class VolumeMemoryController {
             currentDevice = device
             let clampedVolume = normalizedVolume(volume)
             try audioHardware.setOutputVolume(clampedVolume, for: device)
-            save(clampedVolume, for: device)
-            publishTrackingStatus(for: device, currentVolume: clampedVolume, note: "已调整并保存音量。")
+            if !fixedRestoreEnabled { save(clampedVolume, for: device) }
+            publishTrackingStatus(for: device, currentVolume: clampedVolume,
+                                  note: fixedRestoreEnabled ? "已调整当前音量。" : "已调整并保存音量。")
         } catch {
             publishError(primary: "无法调整 AirPods 音量。", error: error)
         }
@@ -541,7 +568,7 @@ final class VolumeMemoryController {
         }
         installVolumeListener(for: device)
         let currentVolume = try? normalizedVolume(audioHardware.outputVolume(for: device))
-        let rememberedVolume = savedVolume(for: device)
+        let rememberedVolume = preferredRestoreVolume(for: device)
         recordConnection(for: device, connectedVolume: currentVolume)
         beginConnectionSettling(for: device)
 
@@ -658,12 +685,15 @@ final class VolumeMemoryController {
             markCurrentHistory(outcome: .pending, restoredVolume: nil)
         }
 
+        let initialVolume = try? audioHardware.outputVolume(for: device)
+        let allowEarlyVerification = !fixedRestoreEnabled
+            && (initialVolume.map { volumesMatch($0, volume) } ?? false)
         let delays = configuration.restoreAttemptDelays.isEmpty ? [0] : configuration.restoreAttemptDelays
         for (index, delay) in delays.enumerated() {
             pendingRestoreTasks.append(
                 scheduler.schedule(after: max(0, delay)) { [weak self] in
                     self?.performRestoreAttempt(index: index, totalAttempts: delays.count, for: device,
-                                                allowEarlyVerification: index == 0)
+                                                allowEarlyVerification: allowEarlyVerification && index == 0)
                 }
             )
         }
@@ -891,6 +921,10 @@ final class VolumeMemoryController {
             // A debounced reconnect event can arrive here after restoration finished.
             guard maySave else { return }
 
+            if fixedRestoreEnabled {
+                publishTrackingStatus(for: device, currentVolume: volume, note: nil)
+                return
+            }
             if let saved = savedVolume(for: device), volumesMatch(saved, volume) {
                 publishTrackingStatus(for: device, currentVolume: volume, note: "音量已同步。")
                 return
@@ -910,8 +944,8 @@ final class VolumeMemoryController {
 
     private func publishTrackingStatus(for device: AudioDevice, currentVolume: Float?, note: String?) {
         lastTrackingNote = note
-        let saved = savedVolume(for: device)
-        let displayed = currentVolume ?? saved
+        let saved = preferredRestoreVolume(for: device)
+        let displayed = currentVolume ?? (fixedRestoreEnabled ? nil : saved)
         publish(
             primary: note ?? "正在记忆：\(device.name).",
             secondary: saved.map { "下次连接将恢复为：\(percent($0))." }
@@ -975,7 +1009,7 @@ final class VolumeMemoryController {
         error: Error,
         canAdjustVolume: Bool = true
     ) {
-        let hasRememberedVolume = currentDevice.flatMap(savedVolume(for:)) != nil
+        let hasRememberedVolume = currentDevice.flatMap(preferredRestoreVolume(for:)) != nil
         publish(
             primary: primary,
             secondary: error.localizedDescription,
@@ -1009,7 +1043,8 @@ final class VolumeMemoryController {
                 restoresPaused: restoresPaused,
                 pauseDescription: pauseDescription,
                 isSettling: isRestoreInProgress || isConnectionSettling,
-                rememberedVolume: airPods.flatMap(savedVolume(for:)),
+                rememberedVolume: airPods.flatMap(preferredRestoreVolume(for:)),
+                fixedRestoreEnabled: fixedRestoreEnabled,
                 deviceAutomaticRestoreEnabled: airPods.map { deviceAutomaticRestoreEnabled($0.uid) } ?? true,
                 problem: problem
             )

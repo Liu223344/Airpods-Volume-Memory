@@ -24,6 +24,7 @@ enum VolumeMemoryControllerTestRunner {
             ("interrupted restores leave no pending history", testInterruptedRestoresLeaveNoPendingHistory),
             ("manual restore keeps the connection outcome", testManualRestoreKeepsConnectionOutcome),
             ("status reports settling until the volume is final", testStatusReportsSettling),
+            ("fixed restore survives iPhone handoff and manual changes", testFixedRestore),
             ("stable restore finishes early and cancels remaining writes", testEarlyStableRestore),
             ("connection notification waits for final verification", testConnectionNotification),
             ("connection notification reports only final failure", testConnectionNotificationCorrection),
@@ -548,11 +549,46 @@ enum VolumeMemoryControllerTestRunner {
         }
     }
 
+    private static func testFixedRestore() throws {
+        try withDefaults { defaults in
+            let device = makeAirPods()
+            let key = "savedOutputVolume.\(device.uid)"
+            let hardware = FakeAudioHardware(device: nil, volume: 0.5)
+            let scheduler = ManualScheduler()
+            let controller = VolumeMemoryController(defaults: defaults, audioHardware: hardware, scheduler: scheduler)
+            var notifications: [ConnectionNotificationEvent] = []
+            controller.onConnectionNotification = { notifications.append($0) }
+            controller.setFixedRestore(enabled: true, percent: 15)
+            controller.start()
+            hardware.device = device
+            hardware.notifyDefaultOutputChanged()
+            scheduler.advance(to: 3)
+            try expect(notifications.isEmpty, "fixed restore must keep checking during handoff")
+            hardware.volume = 0.5
+            hardware.notifyVolumeChanged()
+            scheduler.advance(to: 6)
+            try expect(hardware.volume == 0.15 && notifications.map(\.outcome) == [.restored],
+                       "late handoff reset should be corrected before notification")
+            controller.setCurrentAirPodsVolume(0.42)
+            hardware.volume = 0.37
+            hardware.notifyVolumeChanged()
+            scheduler.advance(to: 7)
+            try expect(defaults.object(forKey: key) == nil, "fixed mode must not save session volume")
+            hardware.device = nil
+            hardware.notifyDefaultOutputChanged()
+            hardware.device = device
+            hardware.notifyDefaultOutputChanged()
+            scheduler.advance(to: 14)
+            try expect(hardware.volume == 0.15 && notifications.count == 2, "next connection uses fixed target")
+            try expect(VolumeMemoryController(defaults: defaults).fixedRestoreEnabled, "mode persists")
+        }
+    }
+
     private static func testEarlyStableRestore() throws {
         try withDefaults { defaults in
             let device = makeAirPods()
             defaults.set(0.25, forKey: "savedOutputVolume.\(device.uid)")
-            let hardware = FakeAudioHardware(device: device, volume: 0.5)
+            let hardware = FakeAudioHardware(device: device, volume: 0.25)
             let scheduler = ManualScheduler()
             let controller = VolumeMemoryController(defaults: defaults, audioHardware: hardware, scheduler: scheduler)
             var connections: [ConnectionNotificationEvent] = []

@@ -7,7 +7,7 @@ enum MenuStatusText {
         guard let name = status.currentDeviceName else {
             return (
                 status.primaryText.trimmingCharacters(in: CharacterSet(charactersIn: "。.")),
-                "连接 AirPods 后会自动记住和恢复音量"
+                status.fixedRestoreEnabled ? "连接 AirPods 后会恢复到固定音量" : "连接 AirPods 后会自动记住和恢复音量"
             )
         }
         let detail: String
@@ -25,7 +25,8 @@ enum MenuStatusText {
             // Only a restore can be in progress once pause and off are ruled out.
             detail = "正在恢复音量…"
         } else if let remembered = status.rememberedVolume {
-            detail = "下次连接时恢复到 \(Int((min(max(remembered, 0), 1) * 100).rounded()))%"
+            let prefix = status.fixedRestoreEnabled ? "下次连接固定恢复到" : "下次连接时恢复到"
+            detail = "\(prefix) \(Int((min(max(remembered, 0), 1) * 100).rounded()))%"
         } else {
             detail = "调整音量后会自动记住"
         }

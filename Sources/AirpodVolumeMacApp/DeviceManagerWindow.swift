@@ -7,6 +7,8 @@ final class DeviceManagerViewModel: ObservableObject {
     @Published private(set) var pauseSummary: String?
     @Published private(set) var accessibilityTrusted = AccessibilityAccess.isTrusted
     @Published var automaticRestoreEnabled: Bool
+    @Published private(set) var fixedRestoreEnabled = false
+    @Published private(set) var fixedRestorePercent = 15
 
     let preferences: AppPreferences
     let loginItems: LoginItemController
@@ -31,6 +33,13 @@ final class DeviceManagerViewModel: ObservableObject {
         pauseSummary = controller.pauseDescription
         automaticRestoreEnabled = controller.automaticRestoreEnabled
         accessibilityTrusted = AccessibilityAccess.isTrusted
+        fixedRestoreEnabled = controller.fixedRestoreEnabled
+        fixedRestorePercent = controller.fixedRestorePercent
+    }
+
+    func setFixedRestore(enabled: Bool, percent: Int) {
+        controller.setFixedRestore(enabled: enabled, percent: percent)
+        refreshRuntimeState()
     }
 
     /// launchctl runs in the background, so this is only done when Settings is shown.
@@ -213,19 +222,24 @@ private struct DevicesView: View {
                 .help("忘记此设备")
             }
 
-            HStack(spacing: 12) {
-                Image(systemName: "speaker.fill").foregroundStyle(.secondary)
-                Slider(
-                    value: Binding(
-                        get: { Double(device.rememberedVolume) },
-                        set: { viewModel.setRememberedVolume($0, for: device.uid) }
-                    ),
-                    in: 0...1,
-                    step: 0.01
-                )
-                Text("\(Int((device.rememberedVolume * 100).rounded()))%")
-                    .monospacedDigit()
-                    .frame(width: 42, alignment: .trailing)
+            if viewModel.fixedRestoreEnabled {
+                Text("固定恢复到 \(viewModel.fixedRestorePercent)%")
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 12) {
+                    Image(systemName: "speaker.fill").foregroundStyle(.secondary)
+                    Slider(
+                        value: Binding(
+                            get: { Double(device.rememberedVolume) },
+                            set: { viewModel.setRememberedVolume($0, for: device.uid) }
+                        ),
+                        in: 0...1,
+                        step: 0.01
+                    )
+                    Text("\(Int((device.rememberedVolume * 100).rounded()))%")
+                        .monospacedDigit()
+                        .frame(width: 42, alignment: .trailing)
+                }
             }
 
             HStack {
@@ -386,6 +400,25 @@ private struct PreferencesView: View {
                         set: { viewModel.setGlobalAutomaticRestore($0) }
                     )
                 )
+
+                Toggle("固定恢复音量", isOn: Binding(
+                    get: { viewModel.fixedRestoreEnabled },
+                    set: { viewModel.setFixedRestore(enabled: $0, percent: viewModel.fixedRestorePercent) }
+                ))
+                if viewModel.fixedRestoreEnabled {
+                    LabeledContent("固定音量") {
+                        HStack {
+                            Slider(value: Binding(
+                                get: { Double(viewModel.fixedRestorePercent) },
+                                set: { viewModel.setFixedRestore(enabled: true, percent: Int($0.rounded())) }
+                            ), in: 0...100, step: 1)
+                            Text("\(viewModel.fixedRestorePercent)%").monospacedDigit()
+                        }
+                    }
+                    Text("下次连接时应用。连接后仍可手动调节本次音量。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 LabeledContent("临时暂停") {
                     if viewModel.restoresPaused {
