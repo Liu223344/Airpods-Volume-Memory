@@ -191,11 +191,10 @@ struct NotificationText: Equatable {
         case .paused: status = "自动恢复已暂停"
         case .automaticRestoreOff: status = "未自动恢复"
         case .noRememberedVolume: status = "已记为初始音量"
-        case .pending: status = "已连接，正在确认音量"
-        case .interrupted: status = "已连接"
+        case .pending, .interrupted: status = "已连接"
         }
         let title: String
-        if let volume = event.volume, event.outcome == .restored || event.outcome == .pending {
+        if let volume = event.volume, event.outcome == .restored {
             title = "恢复到 \(percent(volume))" + (muted ? " · 静音" : "")
         } else if event.outcome == .failed {
             title = event.volume.map { "恢复失败 · 当前 \(percent($0))" } ?? "恢复失败"

@@ -131,7 +131,6 @@ final class VolumeMemoryController {
     private var isManualRestore = false
     private var isConnectionSettling = false
     private var connectionNotificationPending = false
-    private var connectionPreviewSent = false
 
     var currentAirPodsUID: String? { currentDevice?.isAirPods == true ? currentDevice?.uid : nil }
     private var lastTrackingNote: String?
@@ -347,7 +346,6 @@ final class VolumeMemoryController {
         pendingPauseExpirationTask = nil
         isConnectionSettling = false
         connectionNotificationPending = false
-        connectionPreviewSent = false
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
         defaultOutputListener?.invalidate()
@@ -523,7 +521,6 @@ final class VolumeMemoryController {
         currentHistoryEntryID = reusableHistoryEntryID
         if isNewConnection {
             connectionNotificationPending = false
-            connectionPreviewSent = false
             lastTrackingNote = nil
         }
         publishDataSnapshot()
@@ -585,9 +582,6 @@ final class VolumeMemoryController {
                 hasRememberedVolume: false
             )
         }
-        if !isRestoreInProgress, currentVolume != nil {
-            deliverConnectionNotificationIfPending(for: device)
-        }
     }
 
     private func installVolumeListener(for device: AudioDevice) {
@@ -620,7 +614,6 @@ final class VolumeMemoryController {
                 return
             }
             self.publishCurrentStatus(for: device, note: self.lastTrackingNote)
-            self.deliverConnectionNotificationIfPending(for: device)
         }
     }
 
@@ -704,9 +697,6 @@ final class VolumeMemoryController {
         do {
             try audioHardware.setOutputVolume(target, for: device)
             let observed = try? normalizedVolume(audioHardware.outputVolume(for: device))
-            if let observed, volumesMatch(observed, target), !isManualRestore {
-                deliverConnectionPreview(for: device, volume: observed)
-            }
             publish(
                 primary: "正在恢复：\(device.name) 至 \(percent(target)).",
                 secondary: "验证次数：\(index + 1) / \(totalAttempts).",
@@ -769,11 +759,17 @@ final class VolumeMemoryController {
         isManualRestore = false
         restoreTarget = nil
         pendingRestoreTasks.removeAll()
-        defer { deliverConnectionNotificationIfPending(for: device) }
 
         func mark(_ outcome: RestoreHistoryOutcome, _ restoredVolume: Float?) {
             if !wasManual {
                 markCurrentHistory(outcome: outcome, restoredVolume: restoredVolume)
+            }
+            if isConnectionRestore {
+                connectionNotificationPending = false
+                onConnectionNotification?(ConnectionNotificationEvent(
+                    deviceUID: device.uid, deviceName: device.name, volume: restoredVolume,
+                    rememberedVolume: target, outcome: outcome
+                ))
             }
         }
 
@@ -845,35 +841,6 @@ final class VolumeMemoryController {
         if wasAutomaticRestoreInProgress {
             markCurrentHistory(outcome: .interrupted, restoredVolume: nil)
         }
-    }
-
-    private func deliverConnectionPreview(for device: AudioDevice, volume: Float) {
-        guard connectionNotificationPending, !connectionPreviewSent else { return }
-        connectionPreviewSent = true
-        onConnectionNotification?(ConnectionNotificationEvent(
-            deviceUID: device.uid, deviceName: device.name, volume: volume,
-            rememberedVolume: restoreTarget, outcome: .pending
-        ))
-    }
-
-    private func deliverConnectionNotificationIfPending(for device: AudioDevice) {
-        guard connectionNotificationPending, isCurrentEndpoint(device) else {
-            return
-        }
-        connectionNotificationPending = false
-        let entry = currentHistoryEntryID.flatMap { id in connectionHistory.first { $0.id == id } }
-        // The initial banner already showed a verified reading. Send another only
-        // if the later checks show that the volume did not hold.
-        if connectionPreviewSent, entry?.outcome != .failed { return }
-        onConnectionNotification?(
-            ConnectionNotificationEvent(
-                deviceUID: device.uid,
-                deviceName: device.name,
-                volume: try? normalizedVolume(audioHardware.outputVolume(for: device)),
-                rememberedVolume: savedVolume(for: device),
-                outcome: entry?.outcome ?? .pending
-            )
-        )
     }
 
     private func volumeChanged() {

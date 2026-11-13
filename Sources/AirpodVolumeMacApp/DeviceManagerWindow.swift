@@ -445,13 +445,13 @@ private struct PreferencesView: View {
             }
 
             Section("通知") {
-                Toggle("连接 AirPods 时通知当前音量", isOn: $preferences.connectionNotificationEnabled)
+                Toggle("连接 AirPods 后通知恢复结果", isOn: $preferences.connectionNotificationEnabled)
                 Picker("音量恢复通知", selection: $preferences.restoreNotificationMode) {
                     ForEach(RestoreNotificationMode.allCases) { mode in
                         Text(mode.title).tag(mode)
                     }
                 }
-                Text("通知在音量稳定、恢复结果确认后发送。开启连接通知时，连接时的恢复结果会合并到连接通知中，不再单独通知。")
+                Text("自动恢复成功或最终失败时发送一次通知。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -24,8 +24,8 @@ enum VolumeMemoryControllerTestRunner {
             ("interrupted restores leave no pending history", testInterruptedRestoresLeaveNoPendingHistory),
             ("manual restore keeps the connection outcome", testManualRestoreKeepsConnectionOutcome),
             ("status reports settling until the volume is final", testStatusReportsSettling),
-            ("connection notification is sent before final verification", testConnectionNotification),
-            ("early connection notification is corrected on final failure", testConnectionNotificationCorrection),
+            ("connection notification waits for final verification", testConnectionNotification),
+            ("connection notification reports only final failure", testConnectionNotificationCorrection),
             ("notification text leads with the volume", testNotificationText),
             ("takeover blip nudges the player once", testPlaybackStallDetector),
             ("menu status is plain language", testMenuStatusText)
@@ -516,10 +516,10 @@ enum VolumeMemoryControllerTestRunner {
             hardware.notifyDefaultOutputChanged() // Duplicate CoreAudio notification.
             controller.refresh()
             scheduler.advance(to: 1)
-            try expect(connections.count == 1 && restores.isEmpty, "initial readback should notify before final verification")
-            try expect(connections[0].outcome == .pending, "early notification must not claim final success")
+            try expect(connections.isEmpty && restores.isEmpty, "initial readback must not notify before final verification")
             scheduler.advance(to: 10)
             try expect(connections.count == 1, "expected exactly one notification, got \(connections.count)")
+            try expect(connections[0].outcome == .restored, "banner must report final success")
             try expect(connections[0].volume == 0.25, "connection notification has the wrong volume")
             try expect(restores.count == 1 && restores[0].isConnectionRestore, "restore was not flagged as the connection restore")
 
@@ -537,8 +537,8 @@ enum VolumeMemoryControllerTestRunner {
             hardware.device = second
             hardware.volume = 0.4
             hardware.notifyDefaultOutputChanged()
-            try expect(connections.count == 2, "a new connection without a saved level should notify immediately")
-            try expect(connections[1].outcome == .noRememberedVolume && connections[1].volume == 0.4, "new device notification is wrong")
+            scheduler.advance(to: 30)
+            try expect(connections.count == 1, "a connection without a restore must not send a restore result")
 
             let preferences = AppPreferences(defaults: defaults)
             try expect(preferences.connectionNotificationEnabled, "connection notifications should default to on")
@@ -558,13 +558,14 @@ enum VolumeMemoryControllerTestRunner {
             controller.onConnectionNotification = { connections.append($0) }
             controller.start()
             scheduler.advance(to: 0.2)
-            try expect(connections.count == 1 && connections[0].volume == 0.25,
-                       "production configuration should notify after the first readback")
+            try expect(connections.isEmpty, "first readback must not send a banner")
             hardware.volume = 0.5
             hardware.ignoresVolumeWrites = true
+            scheduler.advance(to: 6)
+            try expect(connections.isEmpty, "a retryable mismatch must not notify")
             scheduler.advance(to: 30)
-            try expect(connections.map(\.outcome) == [.pending, .failed],
-                       "final failure must correct the preliminary reading once")
+            try expect(connections.map(\.outcome) == [.failed],
+                       "only the final failure may send a banner")
             try expect(connections.last?.volume == 0.5, "correction should show actual volume")
         }
     }
@@ -592,8 +593,6 @@ enum VolumeMemoryControllerTestRunner {
             NotificationText.highVolume(deviceName: "Pods", volume: 0.8, threshold: 60).title == "音量过高 · 80%",
             "high-volume title"
         )
-        try expect(NotificationText.connection(event(0.4, .pending), muted: false).title == "恢复到 40%",
-                   "early readback leads with restored percentage")
         try expect(NotificationText.connection(event(0.62, .failed), muted: false).title == "恢复失败 · 当前 62%",
                    "correction headline shows current volume")
     }
